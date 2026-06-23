@@ -10,6 +10,10 @@ const cron = require('node-cron');
 const api  = require('./api');
 const db   = require('./palpites');
 const nv   = require('./niveis');
+const wa   = require('./whatsapp');
+const ap   = require('./apostas');
+const dica = require('./dicadodia');
+const fontes = require('./fontes');
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -30,6 +34,9 @@ const CH = {
   niveis:   process.env.CANAL_NIVEIS,
 };
 const CARGO_VIP = process.env.CARGO_VIP || 'VIP';
+const AVISO_APOSTA = '⚠️ +18. Conteúdo recreativo e educativo, não é recomendação de aposta. Apostas envolvem risco de perda. Jogue com responsabilidade. Se precisar de ajuda: 0800 redes de apoio ao jogador.';
+const CANAL_APOSTAS = process.env.CANAL_APOSTAS;
+const LINK_DISCORD = process.env.WPP_LINK_DISCORD || 'https://discord.gg/seuconvite';
 const GUILD_ID = process.env.GUILD_ID; // opcional: deixa comandos instantâneos
 
 const COR_LIME = 0xC6F432, COR_GOL = 0xFF3D7F, COR_TABELA = 0x378ADD, COR_RANKING = 0xFFD700;
@@ -117,6 +124,10 @@ cron.schedule('0 8 * * *', async () => {
   if (!ch) return;
   const jogos = await api.jogosDoDia();
   ch.send({ embeds: [embedJogosDoDia(jogos)] }).catch(e => console.error('Envio jogos:', e.message));
+  if (jogos.length) {
+    const lista = jogos.map(j => `\u2022 ${j.casa} x ${j.fora} (${j.hora})`).join('\n');
+    wa.enviar(`\u26bd *JOGOS DE HOJE \u2014 Copa do Mundo*\n${lista}\n\n\ud83d\udc49 Palpita com a gente no Discord: ${LINK_DISCORD}`);
+  }
 }, { timezone: 'America/Sao_Paulo' });
 
 // Monitor com frequência adaptável:
@@ -127,47 +138,134 @@ let temJogoAoVivo = false;
 async function checarAoVivo() {
   let proximoDelay;
   try {
-    const aoVivo = await api.jogosAoVivo();   // 2 chamadas
+    // Estratégia robusta p/ plano grátis: monitora TODOS os jogos do dia,
+    // não só os marcados como IN_PLAY (que a API grátis quase não marca).
+    const jogos = await api.jogosDoDia();
     const chGols = canal(CH.gols);
+    let temAtivo = false;
 
-    for (const jogo of aoVivo) {
+    // Se há jogo rolando, aciona a API brasileira de backup (economiza quota)
+    const temJogoRolando = jogos.some(j => j.status === 'IN_PLAY' || j.status === 'PAUSED' ||
+      (j.golsCasa !== null && j.status !== 'FINISHED'));
+    let backup = null;
+    if (temJogoRolando) backup = await fontes.golsBackup();
+
+    for (const jogo of jogos) {
       const key = String(jogo.id);
-      if (!palpitesFechados.has(key)) {
+      const status = jogo.status; // SCHEDULED, TIMED, IN_PLAY, PAUSED, FINISHED
+      const ant = placarAnterior[key];
+
+      // ── INÍCIO DO JOGO: status virou IN_PLAY (ou já tem placar e não fechou) ──
+      const comecou = (status === 'IN_PLAY' || status === 'PAUSED' ||
+                       (jogo.golsCasa !== null && status !== 'FINISHED'));
+      if (comecou && !palpitesFechados.has(key)) {
         db.fecharPalpites(key, jogo.casa, jogo.fora);
         palpitesFechados.add(key);
         const chP = canal(CH.palpites);
-        if (chP) chP.send(`🔒 **Palpites fechados para ${jogo.casa} x ${jogo.fora}!** O jogo começou!`).catch(() => {});
-      }
-      const ant = placarAnterior[key];
-      if (ant && (jogo.golsCasa !== ant.golsCasa || jogo.golsFora !== ant.golsFora)) {
-        if (chGols) chGols.send({ embeds: [embedGol(jogo)] }).catch(() => {});
-      }
-      placarAnterior[key] = { golsCasa: jogo.golsCasa, golsFora: jogo.golsFora };
-    }
+        if (chP) chP.send(`🔒 **Bola rolando! ${jogo.casa} x ${jogo.fora} começou!** Palpites fechados.`).catch(() => {});
+        if (chGols) chGols.send(`🟢 **COMEÇOU!** ${jogo.casa} x ${jogo.fora} — bola rolando! ⚽`).catch(() => {});
+        wa.enviar(`🟢 *COMEÇOU!* ${jogo.casa} x ${jogo.fora}
 
-    const aoVivoIds = new Set(aoVivo.map(j => String(j.id)));
-    for (const key of Object.keys(placarAnterior)) {
-      if (!aoVivoIds.has(key) && !jogosEncerrados.has(key)) {
+👉 Palpita e acompanha no Discord: ${LINK_DISCORD}`);
+      }
+
+      // ── GOL: o placar mudou em relação ao que tínhamos guardado ──
+      // Concilia com a fonte de backup (pega gol mais recente entre as duas APIs)
+      if (backup && status !== 'FINISHED' && jogo.golsCasa !== null) {
+        const conc = fontes.conciliar(jogo, backup);
+        jogo.golsCasa = conc.golsCasa;
+        jogo.golsFora = conc.golsFora;
+      }
+      const golsAtual = (jogo.golsCasa ?? 0) + '-' + (jogo.golsFora ?? 0);
+      if (ant !== undefined && jogo.golsCasa !== null && ant.placar !== golsAtual && status !== 'FINISHED') {
+        if (chGols) chGols.send({ embeds: [embedGol({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora, minuto: '—' })] }).catch(() => {});
+        wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}
+
+👉 ${LINK_DISCORD}`);
+      }
+
+      // ── FIM DE JOGO: status virou FINISHED e ainda não processamos ──
+      if (status === 'FINISHED' && !jogosEncerrados.has(key) && jogo.golsCasa !== null) {
         jogosEncerrados.add(key);
-        const ant = placarAnterior[key];
-        const dadosP = db.dadosPartida(key);
-        if (!dadosP) continue;
-        const jogoFim = { casa: dadosP.nomeCasa, fora: dadosP.nomeFora, golsCasa: ant.golsCasa, golsFora: ant.golsFora };
-        if (chGols) chGols.send({ embeds: [embedFimDeJogo(jogoFim)] }).catch(() => {});
-        const resultados = db.pontuar(key, ant.golsCasa, ant.golsFora);
+        // garante que o jogo foi registrado p/ pontuar os palpites
+        if (!palpitesFechados.has(key)) { db.fecharPalpites(key, jogo.casa, jogo.fora); palpitesFechados.add(key); }
+        if (chGols) chGols.send({ embeds: [embedFimDeJogo({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora })] }).catch(() => {});
+        wa.enviar(`🏁 *FIM!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}
+
+👉 Veja o ranking no Discord: ${LINK_DISCORD}`);
+        const resultados = db.pontuar(key, jogo.golsCasa, jogo.golsFora);
         const chR = canal(CH.ranking);
         if (chR && Object.keys(resultados).length > 0) chR.send({ embeds: [embedRanking(db.ranking())] }).catch(() => {});
       }
+
+      // Atualiza o baseline
+      if (jogo.golsCasa !== null) placarAnterior[key] = { placar: golsAtual, status };
+      if (status === 'IN_PLAY' || status === 'PAUSED') temAtivo = true;
     }
 
-    temJogoAoVivo = aoVivo.length > 0;
-    // Com jogo: 45s. Sem jogo: 15 min.
-    proximoDelay = temJogoAoVivo ? 45 * 1000 : 15 * 60 * 1000;
+    // Frequência: tem jogo rolando hoje → 45s; senão → 10 min
+    const temJogoHoje = jogos.some(j => j.status !== 'FINISHED');
+    proximoDelay = temAtivo ? 45 * 1000 : (temJogoHoje ? 2 * 60 * 1000 : 15 * 60 * 1000);
   } catch (e) {
     console.error('Monitor ao vivo:', e.message);
-    proximoDelay = 5 * 60 * 1000; // erro: tenta de novo em 5 min
+    proximoDelay = 5 * 60 * 1000;
   }
   setTimeout(checarAoVivo, proximoDelay);
+}
+
+
+async function montarDicaDoDia() {
+  const jogos = await dica.buscarOddsDoDia();
+  if (!jogos.length) return null;
+  const dd = dica.dicasDoDia(jogos);
+  const e = new EmbedBuilder().setColor(0x1D9E75).setTitle('📊 Dicas do Dia — Análise de Odds');
+
+  if (dd.destaques.length) {
+    const destaque = dd.destaques.map((j, i) => {
+      const fav = (j.melhor.casa.odd && j.melhor.casa.odd <= (j.melhor.fora.odd||99))
+        ? `${j.casa} (odd ${j.melhor.casa.odd} na ${j.melhor.casa.book})`
+        : `${j.fora} (odd ${j.melhor.fora.odd} na ${j.melhor.fora.book})`;
+      return `**${i+1}. ${j.casa} x ${j.fora}** \u2b50\nMelhor cotação: ${fav}`;
+    }).join('\n\n');
+    e.addFields({ name: '🔥 Jogos em destaque hoje', value: destaque });
+  }
+  if (dd.outras.length) {
+    const outras = dd.outras.map(j => `• ${j.casa} x ${j.fora}`).join('\n');
+    e.addFields({ name: '📋 Outras dicas do dia', value: outras });
+  }
+
+  // Múltipla dos sonhos (mercados de craque são ilustrativos)
+  const mercadosCraques = [
+    { mercado: '+9.5 escanteios no jogo do favorito', odd: 2.5, book: 'estimado' },
+    { mercado: 'Craque finaliza no gol', odd: 1.8, book: 'estimado' },
+    { mercado: 'Gol de artilheiro escolhido', odd: 2.2, book: 'estimado' },
+  ];
+  const m = dica.multiplaDosSonhos(jogos, mercadosCraques);
+  if (m) {
+    const linhas = m.pernas.map(p => `• ${p.mercado} (odd ${p.odd})`).join('\n');
+    e.addFields({ name: `🌟 Múltipla dos Sonhos (odd ${m.combinada})`,
+      value: `${linhas}\n\n💭 Chance real: **${m.probRealPct}%** (${m.chance}) — é o sonho, divirta-se!` });
+  }
+  e.setFooter({ text: AVISO_APOSTA });
+  return e;
+}
+
+function embedMultipla(a) {
+  const linhas = a.pernas.map((p,i) => `${i+1}. ${p.mercado} — odd **${p.odd}**`).join('\n');
+  const e = new EmbedBuilder()
+    .setColor(a.evPositivo ? 0x1D9E75 : 0xEF9F27)
+    .setTitle('🎲 Análise de Múltipla')
+    .setDescription(linhas)
+    .addFields(
+      { name: 'Odd combinada', value: `${a.oddCombinada}x`, inline: true },
+      { name: 'Aposta', value: `R$ ${a.valorApostado}`, inline: true },
+      { name: 'Retorno', value: `R$ ${a.retorno}`, inline: true },
+      { name: 'Chance real estimada', value: `${a.probRealPct}% (${a.chance})`, inline: true },
+      { name: 'Nível', value: a.nivel, inline: true },
+      { name: 'Valor esperado', value: a.evPositivo ? `+R$ ${a.ev} ✅` : `R$ ${a.ev} ⚠️`, inline: true },
+    )
+    .setFooter({ text: AVISO_APOSTA });
+  return e;
 }
 
 function embedNivel(st, userId) {
@@ -285,6 +383,15 @@ client.on('guildMemberAdd', async member => {
   } catch (e) { console.error('Convite:', e.message); }
 });
 
+
+// Dica do dia automática às 10h
+cron.schedule('0 10 * * *', async () => {
+  const e = await montarDicaDoDia();
+  if (!e) return;
+  const ch = canal(CANAL_APOSTAS) || canal(CH.palpites);
+  if (ch) ch.send({ embeds: [e] }).catch(() => {});
+}, { timezone: 'America/Sao_Paulo' });
+
 // ════════ COMANDOS ════════
 const comandos = [
   new SlashCommandBuilder().setName('jogos').setDescription('Mostra os jogos da Copa de hoje'),
@@ -307,6 +414,12 @@ const comandos = [
         { name: 'Bônus livre', value: 'bonus_staff' },
       ))
     .addIntegerOption(o => o.setName('quantidade').setDescription('XP (só pro Bônus livre)').setMinValue(1).setMaxValue(1000)),
+  new SlashCommandBuilder().setName('dica').setDescription('Dica do dia: favorito + múltipla + melhor casa (+18)'),
+  new SlashCommandBuilder().setName('fontes').setDescription('(Staff) Status das APIs e quota de backup'),
+  new SlashCommandBuilder().setName('multipla').setDescription('Analisa uma múltipla (recreativo, +18)')
+    .addNumberOption(o => o.setName('valor').setDescription('Valor apostado (ex: 5)').setRequired(true).setMinValue(1))
+    .addStringOption(o => o.setName('odds').setDescription('Odds separadas por espaço. Ex: 1.36 1.90 2.10').setRequired(true))
+    .addStringOption(o => o.setName('mercados').setDescription('Nomes dos mercados separados por vírgula (opcional)')),
   new SlashCommandBuilder().setName('ganhador').setDescription('(Staff) Marca o ganhador do dia (+50 XP)')
     .addUserOption(o => o.setName('membro').setDescription('Ganhador do dia').setRequired(true)),
   new SlashCommandBuilder().setName('palpite').setDescription('Dê seu palpite para um jogo')
@@ -369,6 +482,23 @@ client.on('interactionCreate', async interaction => {
       const alvoMember = await interaction.guild.members.fetch(alvo.id).catch(() => null);
       await processarXp(alvo.id, alvo.username, motivo, alvoMember, qtd);
       await interaction.editReply(`✅ XP concedido a ${alvo.username} (${motivo}).`);
+    } else if (commandName === 'fontes') {
+      const q = fontes.statusQuota();
+      await interaction.editReply(`📡 **Fontes de dados**\n• Primária: football-data.org (ilimitada)\n• Backup BR: apidofutebol — ${q.usadas}/${q.limite} usadas hoje (${q.restantes} restantes)`);
+    } else if (commandName === 'dica') {
+      const e = await montarDicaDoDia();
+      if (!e) return interaction.editReply('Sem odds disponíveis no momento. Tenta mais tarde.');
+      await interaction.editReply({ embeds: [e] });
+    } else if (commandName === 'multipla') {
+      const valor = interaction.options.getNumber('valor');
+      const oddsStr = interaction.options.getString('odds');
+      const mercadosStr = interaction.options.getString('mercados') || '';
+      const odds = oddsStr.split(/[\s,]+/).map(Number).filter(n => n > 1);
+      if (!odds.length) return interaction.editReply('❌ Informe as odds. Ex: `1.36 1.90 2.10`');
+      const nomes = mercadosStr.split(',').map(s => s.trim());
+      const pernas = odds.map((odd, i) => ({ mercado: nomes[i] || `Mercado ${i+1}`, odd }));
+      const analise = ap.analisarMultipla(pernas, valor);
+      await interaction.editReply({ embeds: [embedMultipla(analise)] });
     } else if (commandName === 'ganhador') {
       const membro = await interaction.guild.members.fetch(interaction.user.id);
       const ehStaff = membro.permissions.has(PermissionsBitField.Flags.Administrator)
@@ -423,6 +553,7 @@ client.once('clientReady', async () => {
   console.log(`✅ Hub Lab C.O Bot online! Logado como ${client.user.tag}`);
   await registrarComandos();
   checarAoVivo(); // inicia o monitor inteligente
+  wa.iniciarWhatsApp().catch(e => console.error('WPP init:', e.message)); // inicia o WhatsApp
   // Popula o cache de convites (pra detectar quem convida quem)
   for (const guild of client.guilds.cache.values()) {
     try {
