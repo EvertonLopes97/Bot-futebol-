@@ -66,9 +66,14 @@ async function jogosDoDia() {
 }
 
 async function jogosAoVivo() {
-  const data = await get(`${BASE}/competitions/WC/matches?status=IN_PLAY,PAUSED`);
-  if (!data || !data.matches) return [];
-  return data.matches.map(m => ({
+  // Busca IN_PLAY e PAUSED separadamente (a API recusa vírgula no status)
+  const [d1, d2] = await Promise.all([
+    get(`${BASE}/competitions/WC/matches?status=IN_PLAY`),
+    get(`${BASE}/competitions/WC/matches?status=PAUSED`),
+  ]);
+  const matches = [...(d1?.matches || []), ...(d2?.matches || [])];
+  if (!matches.length) return [];
+  return matches.map(m => ({
     id: m.id,
     casa: traduzTime(m.homeTeam.name),
     fora: traduzTime(m.awayTeam.name),
