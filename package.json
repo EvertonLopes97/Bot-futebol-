@@ -1,0 +1,14 @@
+{
+  "name": "hublab-bot",
+  "version": "1.0.0",
+  "description": "Bot de futebol e palpites da Hub Lab C.O",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.0",
+    "node-fetch": "^2.7.0",
+    "node-cron": "^3.0.3"
+  }
+}
