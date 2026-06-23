@@ -216,7 +216,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`✅ Hub Lab C.O Bot online! Logado como ${client.user.tag}`);
   await registrarComandos();
 });
