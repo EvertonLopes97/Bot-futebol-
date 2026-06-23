@@ -14,6 +14,7 @@ const wa   = require('./whatsapp');
 const ap   = require('./apostas');
 const dica = require('./dicadodia');
 const fontes = require('./fontes');
+const armaz = require('./armazenamento');
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -392,6 +393,28 @@ cron.schedule('0 10 * * *', async () => {
   if (ch) ch.send({ embeds: [e] }).catch(() => {});
 }, { timezone: 'America/Sao_Paulo' });
 
+
+// ── Restrição de comandos por canal ──
+// Cada comando só funciona no(s) canal(is) certo(s). Vazio = qualquer canal.
+const COMANDOS_CANAL = {
+  jogos:       [CH.jogos],
+  tabela:      [CH.tabela],
+  artilheiros: [CH.tabela],
+  proximos:    [CH.jogos],
+  palpite:     [CH.palpites],
+  ranking:     [CH.ranking, CH.palpites],
+  nivel:       [CH.niveis],
+  rankxp:      [CH.niveis],
+  convites:    [CH.niveis],
+  dica:        [CANAL_APOSTAS],
+  multipla:    [CANAL_APOSTAS],
+};
+function podeUsarAqui(commandName, channelId) {
+  const permitidos = COMANDOS_CANAL[commandName];
+  if (!permitidos || !permitidos.length || !permitidos[0]) return true; // sem restrição
+  return permitidos.includes(channelId);
+}
+
 // ════════ COMANDOS ════════
 const comandos = [
   new SlashCommandBuilder().setName('jogos').setDescription('Mostra os jogos da Copa de hoje'),
@@ -449,8 +472,15 @@ async function registrarComandos() {
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
-  await interaction.deferReply();
   const { commandName } = interaction;
+  // Bloqueia comando em canal errado (staff sempre pode)
+  const ehStaffGlobal = interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator);
+  if (!ehStaffGlobal && !podeUsarAqui(commandName, interaction.channelId)) {
+    const canais = (COMANDOS_CANAL[commandName] || []).filter(Boolean).map(id => `<#${id}>`).join(' ou ');
+    await interaction.reply({ content: `❌ Use \`/${commandName}\` em ${canais || 'outro canal'}.`, ephemeral: true });
+    return;
+  }
+  await interaction.deferReply();
   try {
     if (commandName === 'jogos') {
       await interaction.editReply({ embeds: [embedJogosDoDia(await api.jogosDoDia())] });
@@ -490,15 +520,11 @@ client.on('interactionCreate', async interaction => {
       if (!e) return interaction.editReply('Sem odds disponíveis no momento. Tenta mais tarde.');
       await interaction.editReply({ embeds: [e] });
     } else if (commandName === 'multipla') {
-      const valor = interaction.options.getNumber('valor');
-      const oddsStr = interaction.options.getString('odds');
-      const mercadosStr = interaction.options.getString('mercados') || '';
-      const odds = oddsStr.split(/[\s,]+/).map(Number).filter(n => n > 1);
-      if (!odds.length) return interaction.editReply('❌ Informe as odds. Ex: `1.36 1.90 2.10`');
-      const nomes = mercadosStr.split(',').map(s => s.trim());
-      const pernas = odds.map((odd, i) => ({ mercado: nomes[i] || `Mercado ${i+1}`, odd }));
-      const analise = ap.analisarMultipla(pernas, valor);
-      await interaction.editReply({ embeds: [embedMultipla(analise)] });
+      const jogos = await dica.buscarOddsDoDia();
+      if (!jogos.length) { await interaction.editReply('Sem jogos com odds disponíveis agora. Tenta mais tarde.'); return; }
+      const embeds = dica.montarMultiplasProntas(jogos);
+      if (!embeds.length) { await interaction.editReply('Não consegui montar múltiplas agora.'); return; }
+      await interaction.editReply({ embeds });
     } else if (commandName === 'ganhador') {
       const membro = await interaction.guild.members.fetch(interaction.user.id);
       const ehStaff = membro.permissions.has(PermissionsBitField.Flags.Administrator)
@@ -551,6 +577,9 @@ client.on('interactionCreate', async interaction => {
 
 client.once('clientReady', async () => {
   console.log(`✅ Hub Lab C.O Bot online! Logado como ${client.user.tag}`);
+  armaz.diagnostico();
+  await armaz.initSupabase();
+  dica.setRefs(EmbedBuilder, AVISO_APOSTA);
   await registrarComandos();
   checarAoVivo(); // inicia o monitor inteligente
   wa.iniciarWhatsApp().catch(e => console.error('WPP init:', e.message)); // inicia o WhatsApp
