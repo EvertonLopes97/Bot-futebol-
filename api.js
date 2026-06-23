@@ -117,4 +117,16 @@ async function artilheiros() {
   }));
 }
 
-module.exports = { jogosDoDia, jogosAoVivo, tabela, artilheiros, traduzTime };
+async function proximosJogos() {
+  const data = await get(`${BASE}/competitions/WC/matches?status=SCHEDULED,TIMED`);
+  if (!data || !data.matches) return [];
+  return data.matches.slice(0, 15).map(m => ({
+    id: m.id,
+    casa: traduzTime(m.homeTeam.name),
+    fora: traduzTime(m.awayTeam.name),
+    data: new Date(m.utcDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' }),
+    hora: new Date(m.utcDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }),
+  }));
+}
+
+module.exports = { jogosDoDia, jogosAoVivo, tabela, artilheiros, proximosJogos, traduzTime };
