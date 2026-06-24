@@ -118,20 +118,55 @@ function embedProximos(jogos) {
 // ════════ AUTOMAÇÕES (polling inteligente) ════════
 const placarAnterior = {};
 const ultimoPlacarPostado = {};
+const horaInicioJogo = {};
 const palpitesFechados = new Set();
 const jogosEncerrados = new Set();
 
-// Jogos do dia às 8h (1 chamada/dia)
-cron.schedule('0 8 * * *', async () => {
+// ── AGENDADOR ROBUSTO (à prova de timezone do Railway) ──
+// Em vez de depender do timezone do cron, checa o horário de Brasília a cada minuto.
+const tarefasFeitas = {}; // controla pra não repetir no mesmo dia
+
+function horaBrasilia() {
+  const s = new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour12: false });
+  const d = new Date(s);
+  return { h: d.getHours(), m: d.getMinutes(), dia: d.toLocaleDateString('pt-BR') };
+}
+
+async function agendaDoDia() {
   const ch = canal(CH.jogos);
   if (!ch) return;
   const jogos = await api.jogosDoDia();
-  ch.send({ embeds: [embedJogosDoDia(jogos)] }).catch(e => console.error('Envio jogos:', e.message));
-  if (jogos.length) {
-    const lista = jogos.map(j => `\u2022 ${j.casa} x ${j.fora} (${j.hora})`).join('\n');
-    wa.enviar(`\u26bd *JOGOS DE HOJE \u2014 Copa do Mundo*\n${lista}\n\n\ud83d\udc49 Palpita com a gente no Discord: ${LINK_DISCORD}`);
+  if (!jogos.length) {
+    ch.send('📅 **Agenda de hoje:** sem jogos da Copa hoje. Volte amanhã! ⚽').catch(() => {});
+    return;
   }
-}, { timezone: 'America/Sao_Paulo' });
+  ch.send({ embeds: [embedJogosDoDia(jogos)] }).catch(e => console.error('Envio agenda:', e.message));
+  const lista = jogos.map(j => `• ${j.casa} x ${j.fora} (${j.hora})`).join('\n');
+  wa.enviar(`⚽ *JOGOS DE HOJE — Copa do Mundo*\n${lista}\n\n👉 Palpita no Discord: ${LINK_DISCORD}`);
+  console.log(`[AGENDA] disparada com ${jogos.length} jogos`);
+}
+
+// Verificador que roda a cada minuto e dispara as tarefas no horário certo de Brasília
+setInterval(async () => {
+  const { h, m, dia } = horaBrasilia();
+  const marca = (nome) => `${dia}_${nome}`;
+  const jaFez = (nome) => tarefasFeitas[marca(nome)];
+  const marcar = (nome) => { tarefasFeitas[marca(nome)] = true; };
+
+  // 11:00 → agenda do dia (TODOS os jogos, mesmo TIMED) + odds
+  if (h === 11 && m === 0 && !jaFez('agenda11')) {
+    marcar('agenda11');
+    console.log('[AGENDA] 11h — disparando agenda do dia');
+    await agendaDoDia();
+    await entregaOdds('Odds do dia — Copa do Mundo ⚽');
+  }
+  // 20:00 → odds pra amanhã
+  if (h === 20 && m === 0 && !jaFez('odds20')) {
+    marcar('odds20');
+    await entregaOdds('Odds pra amanhã — prepare os palpites! ⚽');
+  }
+}, 60 * 1000); // checa a cada minuto
+
 
 // Monitor com frequência adaptável:
 // - SEM jogo ao vivo: espera 15 min (economiza chamadas)
@@ -178,6 +213,7 @@ async function checarAoVivo() {
       if (comecou && !palpitesFechados.has(key)) {
         db.fecharPalpites(key, jogo.casa, jogo.fora);
         palpitesFechados.add(key);
+        horaInicioJogo[key] = Date.now(); // marca início p/ janela de 2h30
         const chP = canal(CH.palpites);
         if (chP) chP.send(`🔒 **Bola rolando! ${jogo.casa} x ${jogo.fora} começou!** Palpites fechados.`).catch(() => {});
         if (chGols) chGols.send(`🟢 **COMEÇOU!** ${jogo.casa} x ${jogo.fora} — bola rolando! ⚽`).catch(() => {});
@@ -186,14 +222,16 @@ async function checarAoVivo() {
 👉 Palpita e acompanha no Discord: ${LINK_DISCORD}`);
       }
 
-      // ── GOL: o placar mudou em relação ao que tínhamos guardado ──
-      // Concilia com a fonte de backup (pega gol mais recente entre as duas APIs)
+      // ── GOL / PLACAR AO VIVO: dispara SEMPRE que o placar muda, na janela de 2h30 ──
       if (backup && status !== 'FINISHED' && jogo.golsCasa !== null) {
         const conc = fontes.conciliar(jogo, backup);
         jogo.golsCasa = conc.golsCasa;
         jogo.golsFora = conc.golsFora;
       }
       const golsAtual = (jogo.golsCasa ?? 0) + '-' + (jogo.golsFora ?? 0);
+      const inicio = horaInicioJogo[key];
+      const dentroDaJanela = inicio && (Date.now() - inicio) <= (2.5 * 60 * 60 * 1000); // 2h30
+      // dispara se o placar mudou em relação ao guardado (gol detectado nas consultas)
       if (ant !== undefined && jogo.golsCasa !== null && ant.placar !== golsAtual && status !== 'FINISHED') {
         if (chGols) chGols.send({ embeds: [embedGol({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora, minuto: '—' })] }).catch(() => {});
         wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}
@@ -215,13 +253,13 @@ async function checarAoVivo() {
         if (chR && Object.keys(resultados).length > 0) chR.send({ embeds: [embedRanking(db.ranking())] }).catch(() => {});
       }
 
-      // ── PLACAR PERIÓDICO: a cada 5 min posta o placar atual do jogo em andamento ──
-      const emAndamento = comecou && status !== 'FINISHED' && jogo.golsCasa !== null;
+      // ── PLACAR PERIÓDICO: enquanto estiver na janela de 2h30 pós-início, posta a cada 2 min ──
+      const emAndamento = comecou && status !== 'FINISHED' && jogo.golsCasa !== null && dentroDaJanela;
       if (emAndamento) {
         temAtivo = true;
         const agora = Date.now();
         const ultimo = ultimoPlacarPostado[key] || 0;
-        if (agora - ultimo >= 5 * 60 * 1000) { // 5 minutos
+        if (agora - ultimo >= 2 * 60 * 1000) { // 2 minutos
           ultimoPlacarPostado[key] = agora;
           if (chGols) chGols.send(`⏱️ **Parcial:** ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora} — jogo em andamento`).catch(() => {});
         }
@@ -426,10 +464,7 @@ async function entregaOdds(titulo) {
     if (mults.length) ch.send({ embeds: mults }).catch(() => {});
   }
 }
-cron.schedule('0 11 * * *', () => entregaOdds('Odds do dia — Copa do Mundo ⚽'),
-  { timezone: 'America/Sao_Paulo' });
-cron.schedule('0 20 * * *', () => entregaOdds('Odds pra amanhã — prepare os palpites! ⚽'),
-  { timezone: 'America/Sao_Paulo' });
+// (Os disparos de 11h e 20h agora são feitos pelo agendador robusto lá em cima)
 
 
 // ── Restrição de comandos por canal ──
@@ -485,6 +520,7 @@ const comandos = [
       ))
     .addIntegerOption(o => o.setName('quantidade').setDescription('XP (só pro Bônus livre)').setMinValue(1).setMaxValue(1000)),
   new SlashCommandBuilder().setName('dica').setDescription('Dica do dia: favorito + múltipla + melhor casa (+18)'),
+  new SlashCommandBuilder().setName('agenda').setDescription('(Staff) Dispara a agenda do dia agora (teste)'),
   new SlashCommandBuilder().setName('fontes').setDescription('(Staff) Status das APIs e quota de backup'),
   new SlashCommandBuilder().setName('multipla').setDescription('Múltiplas dos sonhos prontas dos jogos mais hypados (+18)'),
   new SlashCommandBuilder().setName('ganhador').setDescription('(Staff) Marca o ganhador do dia (+50 XP)')
@@ -556,6 +592,9 @@ client.on('interactionCreate', async interaction => {
       const alvoMember = await interaction.guild.members.fetch(alvo.id).catch(() => null);
       await processarXp(alvo.id, alvo.username, motivo, alvoMember, qtd);
       await interaction.editReply(`✅ XP concedido a ${alvo.username} (${motivo}).`);
+    } else if (commandName === 'agenda') {
+      await agendaDoDia();
+      await interaction.editReply('✅ Agenda do dia disparada no canal de jogos!');
     } else if (commandName === 'fontes') {
       const q = fontes.statusQuota();
       await interaction.editReply(`📡 **Fontes de dados**\n• Primária: football-data.org (ilimitada)\n• Backup BR: apidofutebol — ${q.usadas}/${q.limite} usadas hoje (${q.restantes} restantes)`);
