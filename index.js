@@ -116,6 +116,7 @@ function embedProximos(jogos) {
 
 // ════════ AUTOMAÇÕES (polling inteligente) ════════
 const placarAnterior = {};
+const ultimoPlacarPostado = {};
 const palpitesFechados = new Set();
 const jogosEncerrados = new Set();
 
@@ -199,14 +200,24 @@ async function checarAoVivo() {
         if (chR && Object.keys(resultados).length > 0) chR.send({ embeds: [embedRanking(db.ranking())] }).catch(() => {});
       }
 
+      // ── PLACAR PERIÓDICO: a cada 5 min posta o placar atual do jogo em andamento ──
+      const emAndamento = comecou && status !== 'FINISHED' && jogo.golsCasa !== null;
+      if (emAndamento) {
+        temAtivo = true;
+        const agora = Date.now();
+        const ultimo = ultimoPlacarPostado[key] || 0;
+        if (agora - ultimo >= 5 * 60 * 1000) { // 5 minutos
+          ultimoPlacarPostado[key] = agora;
+          if (chGols) chGols.send(`⏱️ **Parcial:** ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora} — jogo em andamento`).catch(() => {});
+        }
+      }
+
       // Atualiza o baseline
       if (jogo.golsCasa !== null) placarAnterior[key] = { placar: golsAtual, status };
-      if (status === 'IN_PLAY' || status === 'PAUSED') temAtivo = true;
     }
 
-    // Frequência: tem jogo rolando hoje → 45s; senão → 10 min
-    const temJogoHoje = jogos.some(j => j.status !== 'FINISHED');
-    proximoDelay = temAtivo ? 45 * 1000 : (temJogoHoje ? 2 * 60 * 1000 : 15 * 60 * 1000);
+    // Frequência: tem jogo em andamento → 2 min; senão se há jogo hoje → 5 min; senão → 15 min
+    proximoDelay = temAtivo ? 2 * 60 * 1000 : (jogos.some(j => j.status !== 'FINISHED') ? 5 * 60 * 1000 : 15 * 60 * 1000);
   } catch (e) {
     console.error('Monitor ao vivo:', e.message);
     proximoDelay = 5 * 60 * 1000;
@@ -439,10 +450,7 @@ const comandos = [
     .addIntegerOption(o => o.setName('quantidade').setDescription('XP (só pro Bônus livre)').setMinValue(1).setMaxValue(1000)),
   new SlashCommandBuilder().setName('dica').setDescription('Dica do dia: favorito + múltipla + melhor casa (+18)'),
   new SlashCommandBuilder().setName('fontes').setDescription('(Staff) Status das APIs e quota de backup'),
-  new SlashCommandBuilder().setName('multipla').setDescription('Analisa uma múltipla (recreativo, +18)')
-    .addNumberOption(o => o.setName('valor').setDescription('Valor apostado (ex: 5)').setRequired(true).setMinValue(1))
-    .addStringOption(o => o.setName('odds').setDescription('Odds separadas por espaço. Ex: 1.36 1.90 2.10').setRequired(true))
-    .addStringOption(o => o.setName('mercados').setDescription('Nomes dos mercados separados por vírgula (opcional)')),
+  new SlashCommandBuilder().setName('multipla').setDescription('Múltiplas dos sonhos prontas dos jogos mais hypados (+18)'),
   new SlashCommandBuilder().setName('ganhador').setDescription('(Staff) Marca o ganhador do dia (+50 XP)')
     .addUserOption(o => o.setName('membro').setDescription('Ganhador do dia').setRequired(true)),
   new SlashCommandBuilder().setName('palpite').setDescription('Dê seu palpite para um jogo')
