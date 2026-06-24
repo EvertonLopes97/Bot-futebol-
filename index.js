@@ -437,6 +437,15 @@ function podeUsarAqui(commandName, channelId) {
   if (!permitidos || !permitidos.length || !permitidos[0]) return true; // sem restrição
   return permitidos.includes(channelId);
 }
+// Diagnóstico: mostra no boot quais comandos estão protegidos e quais estão abertos
+function diagnosticoCanais() {
+  console.log('🔒 RESTRIÇÃO DE COMANDOS POR CANAL:');
+  for (const [cmd, canais] of Object.entries(COMANDOS_CANAL)) {
+    const validos = (canais || []).filter(Boolean);
+    if (validos.length) console.log(`   /${cmd} → travado em ${validos.length} canal(is) ✅`);
+    else console.log(`   /${cmd} → ABERTO (falta configurar a variável do canal) ⚠️`);
+  }
+}
 
 // ════════ COMANDOS ════════
 const comandos = [
@@ -600,6 +609,7 @@ client.once('clientReady', async () => {
   armaz.diagnostico();
   await armaz.initSupabase();
   dica.setRefs(EmbedBuilder, AVISO_APOSTA);
+  diagnosticoCanais();
   await registrarComandos();
   checarAoVivo(); // inicia o monitor inteligente
   wa.iniciarWhatsApp().catch(e => console.error('WPP init:', e.message)); // inicia o WhatsApp
