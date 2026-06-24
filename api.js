@@ -50,19 +50,28 @@ const TIMES = {
 function traduzTime(nome) { return TIMES[nome] || nome; }
 
 async function jogosDoDia() {
-  const hoje = new Date().toISOString().split('T')[0];
-  const data = await get(`${BASE}/competitions/WC/matches?dateFrom=${hoje}&dateTo=${hoje}`);
+  // Janela ampla: ontem até amanhã (cobre fuso UTC vs Brasil e jogos de madrugada)
+  const ontem = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const amanha = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  const data = await get(`${BASE}/competitions/WC/matches?dateFrom=${ontem}&dateTo=${amanha}`);
   if (!data || !data.matches) return [];
+  // Filtra só os jogos cuja data LOCAL (Brasil) é hoje, OU que estão em andamento
+  const hojeLocal = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
   return data.matches.map(m => ({
     id: m.id,
     casa: traduzTime(m.homeTeam.name),
     fora: traduzTime(m.awayTeam.name),
     hora: new Date(m.utcDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }),
+    dataLocal: new Date(m.utcDate).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
     status: m.status,
     golsCasa: m.score.fullTime.home,
     golsFora: m.score.fullTime.away,
     fase: m.stage,
-  }));
+  })).filter(j =>
+    j.dataLocal === hojeLocal ||
+    j.status === 'IN_PLAY' || j.status === 'PAUSED' ||
+    (j.golsCasa !== null && j.status !== 'FINISHED')
+  );
 }
 
 async function jogosAoVivo() {
