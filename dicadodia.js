@@ -55,45 +55,51 @@ function probImplicita(odd) { return odd>0 ? 1/odd : 0; }
 // Busca jogos com odds do dia. Retorna lista normalizada.
 // OBS: o endpoint exato pode variar conforme o painel da OddsPapi — ajustável via env.
 async function buscarOddsDoDia() {
-  const cacheado = getCache('odds_dia', 180); // 3h de cache (tier grátis = 250 req/MÊS!)
+  const cacheado = getCache('odds_dia', 180);
   if (cacheado) return cacheado;
   if (!ODDSPAPI_KEY) { console.error('[ODDS] ODDSPAPI_KEY ausente'); return []; }
 
   try {
-    // 1. Pega os fixtures de futebol (sportId 10) de hoje e amanhã
-    const hoje = new Date().toISOString().split('T')[0];
-    const amanha = new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    const urlFix = `${ODDSPAPI_BASE}/v4/fixtures?apiKey=${ODDSPAPI_KEY}&sportId=10&from=${hoje}&to=${amanha}`;
+    // Formato EXATO da doc: from/to em ISO 8601, máximo 10 dias, hasOdds=true
+    const agora = new Date();
+    const from = agora.toISOString().split('.')[0] + 'Z';
+    const to = new Date(agora.getTime() + 2*86400000).toISOString().split('.')[0] + 'Z';
+    const urlFix = `${ODDSPAPI_BASE}/v4/fixtures?apiKey=${ODDSPAPI_KEY}&sportId=10&from=${from}&to=${to}&hasOdds=true`;
     const resFix = await fetch(urlFix);
     if (!resFix.ok) { console.error('[ODDS] fixtures status', resFix.status); return []; }
-    const fixtures = await resFix.json();
-    let comOdds = (Array.isArray(fixtures) ? fixtures : []).filter(f => f.hasOdds);
-    // Filtra só Copa do Mundo se configurado
-    if (SO_COPA && COPA_TOURNAMENT_IDS.length) {
-      comOdds = comOdds.filter(f => COPA_TOURNAMENT_IDS.includes(String(f.tournamentId)));
-    } else if (SO_COPA) {
-      // sem ID configurado: tenta detectar pela nomenclatura do torneio
-      comOdds = comOdds.filter(f => /world cup|copa do mundo|fifa/i.test(f.tournamentName || ''));
-    }
-    // Limita pelo orçamento diário de cota
-    comOdds = comOdds.slice(0, jogosPorEntrega());
-    if (!comOdds.length) { console.log('[ODDS] nenhum jogo com odds hoje/amanhã'); return []; }
+    let fixtures = await resFix.json();
+    if (!Array.isArray(fixtures)) { console.log('[ODDS] resposta inesperada'); return []; }
+    console.log(`[ODDS] ${fixtures.length} jogos com odds encontrados`);
 
-    // 2. Pra cada jogo, pega as odds (1x2 = mercado de resultado)
+    // Filtro Copa do Mundo (tolerante): por nome do torneio OU tournamentId configurado
+    if (SO_COPA) {
+      const copaFiltro = fixtures.filter(f =>
+        /world cup|copa do mundo|fifa|mundial/i.test(f.tournamentName || '') ||
+        (COPA_TOURNAMENT_IDS.length && COPA_TOURNAMENT_IDS.includes(String(f.tournamentId)))
+      );
+      // se o filtro achou jogos da Copa, usa; senão, usa todos (pra não ficar vazio)
+      if (copaFiltro.length) { fixtures = copaFiltro; console.log(`[ODDS] ${fixtures.length} são da Copa`); }
+      else console.log('[ODDS] nenhum jogo da Copa identificado, mostrando todos disponíveis');
+    }
+
+    fixtures = fixtures.slice(0, jogosPorEntrega());
+    if (!fixtures.length) { console.log('[ODDS] nenhum jogo após filtro'); return []; }
+
     const jogos = [];
-    for (const f of comOdds) {
+    for (const f of fixtures) {
       try {
         const urlOdds = `${ODDSPAPI_BASE}/v4/odds?apiKey=${ODDSPAPI_KEY}&fixtureId=${f.fixtureId}`;
         const resOdds = await fetch(urlOdds);
-        if (!resOdds.ok) continue;
+        if (!resOdds.ok) { console.log('[ODDS] odds status', resOdds.status, 'p/', f.fixtureId); continue; }
         const oddsData = await resOdds.json();
         const jogo = extrairMelhorOdd(f, oddsData);
         if (jogo) jogos.push(jogo);
-        await new Promise(r => setTimeout(r, 1000)); // cooldown entre chamadas
+        await new Promise(r => setTimeout(r, 1000));
       } catch (e) { console.log('[ODDS] erro jogo:', e.message); }
     }
 
-    if (jogos.length) { console.log(`[ODDS] ✅ ${jogos.length} jogos com odds`); setCache('odds_dia', jogos); }
+    if (jogos.length) { console.log(`[ODDS] ✅ ${jogos.length} jogos prontos`); setCache('odds_dia', jogos); }
+    else console.log('[ODDS] nenhuma odd extraída');
     return jogos;
   } catch (e) { console.error('[ODDS]', e.message); return []; }
 }
@@ -101,27 +107,24 @@ async function buscarOddsDoDia() {
 // Extrai a melhor odd (1/X/2) entre todas as casas pra um jogo
 function extrairMelhorOdd(fixture, oddsData) {
   try {
-    const casa = fixture.participant1Name || 'Casa';
-    const fora = fixture.participant2Name || 'Fora';
+    const casa = fixture.participant1Name || oddsData.participant1Name || 'Casa';
+    const fora = fixture.participant2Name || oddsData.participant2Name || 'Fora';
     const melhor = { casa: { odd: 0, book: '' }, empate: { odd: 0, book: '' }, fora: { odd: 0, book: '' } };
-    const books = oddsData.bookmakerOdds || oddsData.bookmakers || {};
+    const books = oddsData.bookmakerOdds || {};
 
     for (const [bookSlug, bookData] of Object.entries(books)) {
-      const markets = bookData.markets || {};
-      // mercado 1 ou "101" costuma ser o 1x2 (resultado)
-      const mkt = markets['1'] || markets['101'] || markets['h2h'] || Object.values(markets)[0];
-      if (!mkt) continue;
-      const outcomes = mkt.outcomes || {};
-      for (const [, oc] of Object.entries(outcomes)) {
-        const players = oc.players || { '0': oc };
-        const p = players['0'] || oc;
-        const preco = p.price || 0;
-        const tipo = (p.bookmakerOutcomeId || oc.bookmakerOutcomeId || '').toLowerCase();
-        if (preco <= 0) continue;
-        if (tipo === 'home' && preco > melhor.casa.odd) melhor.casa = { odd: preco, book: bookSlug };
-        else if (tipo === 'away' && preco > melhor.fora.odd) melhor.fora = { odd: preco, book: bookSlug };
-        else if (tipo === 'draw' && preco > melhor.empate.odd) melhor.empate = { odd: preco, book: bookSlug };
-      }
+      const markets = (bookData && bookData.markets) || {};
+      const m101 = markets['101']; // 101 = Full Time Result (1X2)
+      if (!m101 || !m101.outcomes) continue;
+      const oc = m101.outcomes;
+      // outcome 101=home, 102=draw, 103=away
+      const preco = (id) => {
+        try { return oc[id].players['0'].price || 0; } catch { return 0; }
+      };
+      const ph = preco('101'), pd = preco('102'), pa = preco('103');
+      if (ph > melhor.casa.odd) melhor.casa = { odd: ph, book: bookSlug };
+      if (pd > melhor.empate.odd) melhor.empate = { odd: pd, book: bookSlug };
+      if (pa > melhor.fora.odd) melhor.fora = { odd: pa, book: bookSlug };
     }
     if (!melhor.casa.odd && !melhor.fora.odd) return null;
     return { casa, fora, melhor };
