@@ -14,6 +14,24 @@ const CACHE = path.join(DIR, 'odds_cache.json');
 
 const ODDSPAPI_KEY = process.env.ODDSPAPI_KEY;
 const ODDSPAPI_BASE = 'https://api.oddspapi.io';
+// ── Orçamento diário de cota (250/mês ÷ dias do mês = req/dia) ──
+const COTA_MENSAL = parseInt(process.env.ODDSPAPI_COTA_MES || '250');
+function diasNoMes() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+}
+function orcamentoDiario() {
+  return Math.max(2, Math.floor(COTA_MENSAL / diasNoMes())); // mínimo 2
+}
+// quantos jogos buscar por entrega (metade do orçamento, pois são 2 entregas/dia)
+function jogosPorEntrega() {
+  return Math.max(1, Math.floor(orcamentoDiario() / 2));
+}
+
+// Filtro Copa do Mundo: tournamentId da Copa na OddsPapi (configurável)
+const COPA_TOURNAMENT_IDS = (process.env.ODDSPAPI_COPA_IDS || '').split(',').map(s=>s.trim()).filter(Boolean);
+const SO_COPA = (process.env.SO_COPA || 'true') === 'true';
+
 
 // ── cache (respeita o cooldown da API) ──
 function getCache(chave, ttlMin) {
@@ -49,7 +67,16 @@ async function buscarOddsDoDia() {
     const resFix = await fetch(urlFix);
     if (!resFix.ok) { console.error('[ODDS] fixtures status', resFix.status); return []; }
     const fixtures = await resFix.json();
-    const comOdds = (Array.isArray(fixtures) ? fixtures : []).filter(f => f.hasOdds).slice(0, 12);
+    let comOdds = (Array.isArray(fixtures) ? fixtures : []).filter(f => f.hasOdds);
+    // Filtra só Copa do Mundo se configurado
+    if (SO_COPA && COPA_TOURNAMENT_IDS.length) {
+      comOdds = comOdds.filter(f => COPA_TOURNAMENT_IDS.includes(String(f.tournamentId)));
+    } else if (SO_COPA) {
+      // sem ID configurado: tenta detectar pela nomenclatura do torneio
+      comOdds = comOdds.filter(f => /world cup|copa do mundo|fifa/i.test(f.tournamentName || ''));
+    }
+    // Limita pelo orçamento diário de cota
+    comOdds = comOdds.slice(0, jogosPorEntrega());
     if (!comOdds.length) { console.log('[ODDS] nenhum jogo com odds hoje/amanhã'); return []; }
 
     // 2. Pra cada jogo, pega as odds (1x2 = mercado de resultado)
