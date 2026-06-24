@@ -1,3 +1,8 @@
+// Referências injetadas pelo index.js (EmbedBuilder e aviso)
+let EmbedBuilderRef = null;
+let AVISO_REF = '+18 | Conteúdo recreativo, não é recomendação de aposta. Jogue com responsabilidade.';
+function setRefs(EmbedBuilder, aviso) { EmbedBuilderRef = EmbedBuilder; if (aviso) AVISO_REF = aviso; }
+
 // dicadodia.js — Comparador de odds + dica do dia (recreativo, +18)
 // Usa OddsPapi (grátis, 350+ casas) pra odds. Compara casas e monta múltipla honesta.
 const fetch = require('node-fetch');
@@ -138,4 +143,66 @@ function multiplaDosSonhos(jogos, mercadosCraques) {
   };
 }
 
-module.exports = { buscarOddsDoDia, dicasDoDia, multiplaDosSonhos, relevanciaJogo };
+// Monta 3 múltiplas prontas: Segura, Equilibrada e Dos Sonhos
+function montarMultiplasProntas(jogos) {
+  // ordena por relevância (popularidade) pra pegar os hypados
+  const ordenados = jogos
+    .map(j => ({ ...j, score: relevanciaJogo(j) }))
+    .filter(j => j.melhor.casa.odd > 0 || j.melhor.fora.odd > 0)
+    .sort((a,b) => b.score - a.score);
+
+  if (!ordenados.length) return [];
+
+  function favorito(j) {
+    return (j.melhor.casa.odd && j.melhor.casa.odd <= (j.melhor.fora.odd || 99))
+      ? { time: j.casa, odd: j.melhor.casa.odd, book: j.melhor.casa.book, jogo: `${j.casa} x ${j.fora}` }
+      : { time: j.fora, odd: j.melhor.fora.odd, book: j.melhor.fora.book, jogo: `${j.casa} x ${j.fora}` };
+  }
+
+  function montar(titulo, cor, candidatos, alvoMin, alvoMax, extras) {
+    const pernas = [];
+    let comb = 1;
+    for (const c of candidatos) {
+      if (comb >= alvoMax) break;
+      pernas.push({ txt: `${c.time} vence (${c.jogo})`, odd: c.odd, book: c.book });
+      comb *= c.odd;
+      if (comb >= alvoMin && pernas.length >= 2) break;
+    }
+    for (const e of (extras || [])) { pernas.push(e); comb *= e.odd; }
+    if (pernas.length < 2) return null;
+    const prob = pernas.reduce((a,p)=>a*(p.odd>0?1/p.odd:0),1);
+    const linhas = pernas.map(p => `• ${p.txt} — odd ${p.odd.toFixed(2)}${p.book?` (${p.book})`:''}`).join('\n');
+    return new EmbedBuilderRef()
+      .setColor(cor)
+      .setTitle(titulo)
+      .setDescription(linhas)
+      .addFields(
+        { name: 'Odd combinada', value: `${comb.toFixed(2)}x`, inline: true },
+        { name: 'Chance real', value: `${(prob*100).toFixed(1)}% (1 em ${Math.round(1/prob)})`, inline: true },
+      )
+      .setFooter({ text: AVISO_REF });
+  }
+
+  // candidatos a favoritos (odd entre 1.3 e 2.5)
+  const favs = ordenados.map(favorito).filter(f => f.odd >= 1.3 && f.odd <= 2.5);
+
+  const embeds = [];
+  // 1. SEGURA (odd ~2-4)
+  const segura = montar('🟢 Múltipla Segura', 0x1D9E75, favs, 2.5, 4);
+  if (segura) embeds.push(segura);
+  // 2. EQUILIBRADA (odd ~5-12)
+  const equil = montar('🟡 Múltipla Equilibrada', 0xEF9F27, favs, 6, 12);
+  if (equil) embeds.push(equil);
+  // 3. DOS SONHOS (odd alta + mercados de craque ilustrativos)
+  const craques = [
+    { txt: '+9.5 escanteios no jogo do favorito', odd: 2.4, book: 'estimado' },
+    { txt: 'Craque finaliza no gol', odd: 1.8, book: 'estimado' },
+    { txt: 'Gol de artilheiro escolhido', odd: 2.2, book: 'estimado' },
+  ];
+  const sonhos = montar('🌟 Múltipla DOS SONHOS', 0xFF2E63, favs, 5, 8, craques);
+  if (sonhos) embeds.push(sonhos);
+
+  return embeds;
+}
+
+module.exports = { buscarOddsDoDia, dicasDoDia, multiplaDosSonhos, relevanciaJogo, montarMultiplasProntas, setRefs };
