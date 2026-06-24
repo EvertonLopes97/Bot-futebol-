@@ -15,6 +15,7 @@ const ap   = require('./apostas');
 const dica = require('./dicadodia');
 const fontes = require('./fontes');
 const armaz = require('./armazenamento');
+const servidor = require('./servidor');
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -147,6 +148,12 @@ async function checarAoVivo() {
     let temAtivo = false;
 
     // LOG DE DIAGNÓSTICO: mostra o que o monitor está vendo a cada ciclo
+    servidor.setEstado('jogosHoje', jogos);
+    servidor.setEstado('aoVivo', jogos.filter(j => j.golsCasa !== null && j.status !== 'FINISHED'));
+    try {
+      servidor.setEstado('ranking', db.ranking().slice(0, 20));
+      if (nv && nv.rankingXp) servidor.setEstado('rankingXP', nv.rankingXp().slice(0, 20));
+    } catch (e) {}
     if (jogos.length) {
       console.log(`[MONITOR] ${jogos.length} jogo(s) hoje:`,
         jogos.map(j => `${j.casa} ${j.golsCasa ?? '-'}x${j.golsFora ?? '-'} ${j.fora} [${j.status}]`).join(' | '));
@@ -618,6 +625,7 @@ client.once('clientReady', async () => {
   await armaz.initSupabase();
   dica.setRefs(EmbedBuilder, AVISO_APOSTA);
   diagnosticoCanais();
+  servidor.iniciarServidor(process.env.PORT || 3000);
   await registrarComandos();
   checarAoVivo(); // inicia o monitor inteligente
   wa.iniciarWhatsApp().catch(e => console.error('WPP init:', e.message)); // inicia o WhatsApp
