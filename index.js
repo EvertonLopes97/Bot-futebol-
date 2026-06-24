@@ -397,12 +397,24 @@ client.on('guildMemberAdd', async member => {
 
 
 // Dica do dia automática às 10h
-cron.schedule('0 10 * * *', async () => {
-  const e = await montarDicaDoDia();
-  if (!e) return;
+// Entrega automática de odds 2x ao dia: 11h (jogos do dia) e 20h (jogos de amanhã)
+async function entregaOdds(titulo) {
+  const dicaEmbed = await montarDicaDoDia();
   const ch = canal(CANAL_APOSTAS) || canal(CH.palpites);
-  if (ch) ch.send({ embeds: [e] }).catch(() => {});
-}, { timezone: 'America/Sao_Paulo' });
+  if (!ch) return;
+  if (titulo) ch.send(`📢 **${titulo}**`).catch(() => {});
+  if (dicaEmbed) ch.send({ embeds: [dicaEmbed] }).catch(() => {});
+  // múltiplas prontas junto
+  const jogos = await dica.buscarOddsDoDia();
+  if (jogos.length) {
+    const mults = dica.montarMultiplasProntas(jogos);
+    if (mults.length) ch.send({ embeds: mults }).catch(() => {});
+  }
+}
+cron.schedule('0 11 * * *', () => entregaOdds('Odds do dia — Copa do Mundo ⚽'),
+  { timezone: 'America/Sao_Paulo' });
+cron.schedule('0 20 * * *', () => entregaOdds('Odds pra amanhã — prepare os palpites! ⚽'),
+  { timezone: 'America/Sao_Paulo' });
 
 
 // ── Restrição de comandos por canal ──
