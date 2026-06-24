@@ -8,7 +8,28 @@
   "dependencies": {
     "discord.js": "^14.15.0",
     "node-fetch": "^2.7.0",
+    "node-cron": "^3.0.3",{
+  "name": "hublab-bot",
+  "version": "1.0.0",
+  "description": "Bot de futebol, palpites, niveis e WhatsApp da Hub Lab C.O",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.0",
+    "node-fetch": "^2.7.0",
     "node-cron": "^3.0.3",
+    "dotenv": "^16.4.5",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0",
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
     "dotenv": "^16.4.5",
     "@whiskeysockets/baileys": "^6.7.9",
     "pino": "^9.5.0",
