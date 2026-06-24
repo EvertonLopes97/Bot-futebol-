@@ -146,6 +146,14 @@ async function checarAoVivo() {
     const chGols = canal(CH.gols);
     let temAtivo = false;
 
+    // LOG DE DIAGNÓSTICO: mostra o que o monitor está vendo a cada ciclo
+    if (jogos.length) {
+      console.log(`[MONITOR] ${jogos.length} jogo(s) hoje:`,
+        jogos.map(j => `${j.casa} ${j.golsCasa ?? '-'}x${j.golsFora ?? '-'} ${j.fora} [${j.status}]`).join(' | '));
+    } else {
+      console.log('[MONITOR] nenhum jogo encontrado para hoje. Canal gols configurado:', !!chGols);
+    }
+
     // Se há jogo rolando, aciona a API brasileira de backup (economiza quota)
     const temJogoRolando = jogos.some(j => j.status === 'IN_PLAY' || j.status === 'PAUSED' ||
       (j.golsCasa !== null && j.status !== 'FINISHED'));
