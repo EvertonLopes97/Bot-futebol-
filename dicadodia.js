@@ -222,8 +222,7 @@ function multiplaDosSonhos(jogos, mercadosCraques) {
 }
 
 // Monta 3 múltiplas prontas: Segura, Equilibrada e Dos Sonhos
-function montarMultiplasProntas(jogos) {
-  // ordena por relevância (popularidade) pra pegar os hypados
+async function montarMultiplasProntas(jogos, estatisticas) {
   const ordenados = jogos
     .map(j => ({ ...j, score: relevanciaJogo(j) }))
     .filter(j => j.melhor.casa.odd > 0 || j.melhor.fora.odd > 0)
@@ -249,7 +248,11 @@ function montarMultiplasProntas(jogos) {
     for (const e of (extras || [])) { pernas.push(e); comb *= e.odd; }
     if (pernas.length < 2) return null;
     const prob = pernas.reduce((a,p)=>a*(p.odd>0?1/p.odd:0),1);
-    const linhas = pernas.map(p => `• ${p.txt} — odd ${p.odd.toFixed(2)}${p.book?` (${p.book})`:''}`).join('\n');
+    const linhas = pernas.map(p => {
+      const tag = p.tipo === 'REAL' ? ' 📊' : (p.tipo === 'ESTIMATIVA' ? ' ~' : '');
+      const just = p.justificativa ? ` _(${p.justificativa})_` : '';
+      return `• ${p.txt}${tag} — odd ${p.odd.toFixed(2)}${p.book?` (${p.book})`:''}${just}`;
+    }).join('\n');
     return new EmbedBuilderRef()
       .setColor(cor)
       .setTitle(titulo)
@@ -258,26 +261,39 @@ function montarMultiplasProntas(jogos) {
         { name: 'Odd combinada', value: `${comb.toFixed(2)}x`, inline: true },
         { name: 'Chance real', value: `${(prob*100).toFixed(1)}% (1 em ${Math.round(1/prob)})`, inline: true },
       )
-      .setFooter({ text: AVISO_REF });
+      .setFooter({ text: '📊 = baseado em estatística real | ~ = estimativa. ' + AVISO_REF });
   }
 
-  // candidatos a favoritos (odd entre 1.3 e 2.5)
   const favs = ordenados.map(favorito).filter(f => f.odd >= 1.3 && f.odd <= 2.5);
 
   const embeds = [];
-  // 1. SEGURA (odd ~2-4)
   const segura = montar('🟢 Múltipla Segura', 0x1D9E75, favs, 2.5, 4);
   if (segura) embeds.push(segura);
-  // 2. EQUILIBRADA (odd ~5-12)
   const equil = montar('🟡 Múltipla Equilibrada', 0xEF9F27, favs, 6, 12);
   if (equil) embeds.push(equil);
-  // 3. DOS SONHOS (odd alta + mercados de craque ilustrativos)
-  const craques = [
-    { txt: '+9.5 escanteios no jogo do favorito', odd: 2.4, book: 'estimado' },
-    { txt: 'Craque finaliza no gol', odd: 1.8, book: 'estimado' },
-    { txt: 'Gol de artilheiro escolhido', odd: 2.2, book: 'estimado' },
-  ];
-  const sonhos = montar('🌟 Múltipla DOS SONHOS', 0xFF2E63, favs, 5, 8, craques);
+
+  // DOS SONHOS: análise estatística REAL dos 3 jogos em destaque
+  let mercadosCraque = [];
+  if (estatisticas && estatisticas.mercadosAnalisados) {
+    const destaques = ordenados.slice(0, 3);
+    for (const j of destaques) {
+      try {
+        const m = await estatisticas.mercadosAnalisados(j.casa, j.fora);
+        // pega o melhor mercado analisado de cada jogo (máx 1 por jogo p/ economizar)
+        if (m && m.length) {
+          mercadosCraque.push({ txt: `${m[0].mercado} (${j.casa} x ${j.fora})`, odd: m[0].odd, book: 'análise', tipo: m[0].tipo, justificativa: m[0].justificativa });
+        }
+      } catch (e) { console.log('[ANALISE]', e.message); }
+    }
+  }
+  // se a análise não trouxe nada, cai pros estimados (marcados como tal)
+  if (!mercadosCraque.length) {
+    mercadosCraque = [
+      { txt: '+9.5 escanteios no jogo do favorito', odd: 2.4, book: 'estimado', tipo: 'ESTIMATIVA' },
+      { txt: 'Gol de artilheiro', odd: 2.2, book: 'estimado', tipo: 'ESTIMATIVA' },
+    ];
+  }
+  const sonhos = montar('🌟 Múltipla DOS SONHOS', 0xFF2E63, favs, 4, 6, mercadosCraque);
   if (sonhos) embeds.push(sonhos);
 
   return embeds;
