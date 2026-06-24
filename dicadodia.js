@@ -37,20 +37,68 @@ function probImplicita(odd) { return odd>0 ? 1/odd : 0; }
 // Busca jogos com odds do dia. Retorna lista normalizada.
 // OBS: o endpoint exato pode variar conforme o painel da OddsPapi — ajustável via env.
 async function buscarOddsDoDia() {
-  const cacheado = getCache('odds_dia', 60); // 1h de cache
+  const cacheado = getCache('odds_dia', 180); // 3h de cache (tier grátis = 250 req/MÊS!)
   if (cacheado) return cacheado;
-  if (!ODDSPAPI_KEY) { console.error('[DICA] ODDSPAPI_KEY ausente'); return []; }
+  if (!ODDSPAPI_KEY) { console.error('[ODDS] ODDSPAPI_KEY ausente'); return []; }
+
   try {
-    // sportId 10 = futebol na OddsPapi (confirme no painel). Pega eventos do dia.
-    const url = `${ODDSPAPI_BASE}/v4/events?apiKey=${ODDSPAPI_KEY}&sport=football`;
-    const res = await fetch(url);
-    if (!res.ok) { console.error('[DICA] OddsPapi status', res.status); return []; }
-    const j = await res.json();
-    const eventos = j.events || j.data || j || [];
-    const jogos = (Array.isArray(eventos) ? eventos : []).slice(0, 40).map(normalizarEvento).filter(Boolean);
-    setCache('odds_dia', jogos);
+    // 1. Pega os fixtures de futebol (sportId 10) de hoje e amanhã
+    const hoje = new Date().toISOString().split('T')[0];
+    const amanha = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    const urlFix = `${ODDSPAPI_BASE}/v4/fixtures?apiKey=${ODDSPAPI_KEY}&sportId=10&from=${hoje}&to=${amanha}`;
+    const resFix = await fetch(urlFix);
+    if (!resFix.ok) { console.error('[ODDS] fixtures status', resFix.status); return []; }
+    const fixtures = await resFix.json();
+    const comOdds = (Array.isArray(fixtures) ? fixtures : []).filter(f => f.hasOdds).slice(0, 12);
+    if (!comOdds.length) { console.log('[ODDS] nenhum jogo com odds hoje/amanhã'); return []; }
+
+    // 2. Pra cada jogo, pega as odds (1x2 = mercado de resultado)
+    const jogos = [];
+    for (const f of comOdds) {
+      try {
+        const urlOdds = `${ODDSPAPI_BASE}/v4/odds?apiKey=${ODDSPAPI_KEY}&fixtureId=${f.fixtureId}`;
+        const resOdds = await fetch(urlOdds);
+        if (!resOdds.ok) continue;
+        const oddsData = await resOdds.json();
+        const jogo = extrairMelhorOdd(f, oddsData);
+        if (jogo) jogos.push(jogo);
+        await new Promise(r => setTimeout(r, 1000)); // cooldown entre chamadas
+      } catch (e) { console.log('[ODDS] erro jogo:', e.message); }
+    }
+
+    if (jogos.length) { console.log(`[ODDS] ✅ ${jogos.length} jogos com odds`); setCache('odds_dia', jogos); }
     return jogos;
-  } catch (e) { console.error('[DICA]', e.message); return []; }
+  } catch (e) { console.error('[ODDS]', e.message); return []; }
+}
+
+// Extrai a melhor odd (1/X/2) entre todas as casas pra um jogo
+function extrairMelhorOdd(fixture, oddsData) {
+  try {
+    const casa = fixture.participant1Name || 'Casa';
+    const fora = fixture.participant2Name || 'Fora';
+    const melhor = { casa: { odd: 0, book: '' }, empate: { odd: 0, book: '' }, fora: { odd: 0, book: '' } };
+    const books = oddsData.bookmakerOdds || oddsData.bookmakers || {};
+
+    for (const [bookSlug, bookData] of Object.entries(books)) {
+      const markets = bookData.markets || {};
+      // mercado 1 ou "101" costuma ser o 1x2 (resultado)
+      const mkt = markets['1'] || markets['101'] || markets['h2h'] || Object.values(markets)[0];
+      if (!mkt) continue;
+      const outcomes = mkt.outcomes || {};
+      for (const [, oc] of Object.entries(outcomes)) {
+        const players = oc.players || { '0': oc };
+        const p = players['0'] || oc;
+        const preco = p.price || 0;
+        const tipo = (p.bookmakerOutcomeId || oc.bookmakerOutcomeId || '').toLowerCase();
+        if (preco <= 0) continue;
+        if (tipo === 'home' && preco > melhor.casa.odd) melhor.casa = { odd: preco, book: bookSlug };
+        else if (tipo === 'away' && preco > melhor.fora.odd) melhor.fora = { odd: preco, book: bookSlug };
+        else if (tipo === 'draw' && preco > melhor.empate.odd) melhor.empate = { odd: preco, book: bookSlug };
+      }
+    }
+    if (!melhor.casa.odd && !melhor.fora.odd) return null;
+    return { casa, fora, melhor };
+  } catch { return null; }
 }
 
 // Normaliza um evento (tolerante a variações de formato)
