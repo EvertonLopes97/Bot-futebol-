@@ -1,5 +1,5 @@
-// estatisticas.js — Estatísticas via Sofascore (RapidAPI), uso oportunista
-// Busca escanteios/cartões médios. Se não tiver dado, retorna null (sem quebrar).
+// estatisticas.js — Análise estatística via Sofascore (RapidAPI)
+// Usado SÓ nos 3 jogos em destaque (economiza cota). Marca real vs estimativa.
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
@@ -25,57 +25,118 @@ function setCache(chave, dados) {
   } catch {}
 }
 
-// Busca estatísticas de um time pelo sofascoreId (vem do externalProviders da OddsPapi)
-// Retorna { escanteiosMedia, cartoesMedia } ou null
-async function statsTime(sofascoreId) {
-  if (!RAPID_KEY || !sofascoreId) return null;
-  const chave = `time_${sofascoreId}`;
-  const cacheado = getCache(chave, 24); // 24h de cache
-  if (cacheado) return cacheado;
-
+// helper de fetch tolerante
+async function rapidGet(endpoint) {
+  if (!RAPID_KEY) return null;
   try {
-    const url = `https://${RAPID_HOST}/teams/get-statistics?teamId=${sofascoreId}`;
+    const url = `https://${RAPID_HOST}${endpoint}`;
     const res = await fetch(url, { headers: { 'x-rapidapi-key': RAPID_KEY, 'x-rapidapi-host': RAPID_HOST } });
-    if (!res.ok) { console.log('[STATS] sofascore status', res.status); return null; }
-    const j = await res.json();
-    const s = j.statistics || j.stats || j;
-    if (!s) return null;
-    const dados = {
-      escanteiosMedia: parseFloat(s.cornersPerGame || s.corners || 0) || null,
-      cartoesMedia: parseFloat(s.yellowCardsPerGame || s.cards || 0) || null,
-    };
-    setCache(chave, dados);
-    return dados;
-  } catch (e) { console.log('[STATS]', e.message); return null; }
+    if (!res.ok) { console.log(`[STATS] ${endpoint} → status ${res.status}`); return null; }
+    return await res.json();
+  } catch (e) { console.log('[STATS] erro:', e.message); return null; }
 }
 
-// Monta sugestões de mercado baseadas em estatística (oportunista)
-// Retorna array de { mercado, odd, justificativa } — vazio se sem dados
-async function mercadosEstatisticos(fixture) {
-  const ext = fixture.externalProviders || {};
-  const id1 = ext.sofascoreId || fixture.participant1SofascoreId;
-  if (!id1) return [];
+// Procura um time pelo nome e retorna o teamId do Sofascore
+async function buscarTimeId(nome) {
+  const chave = `id_${nome.toLowerCase()}`;
+  const cacheado = getCache(chave, 168); // 7 dias
+  if (cacheado) return cacheado;
+  // endpoint de busca (tolerante a variações)
+  const j = await rapidGet(`/v1/search/multi?query=${encodeURIComponent(nome)}&type=teams`)
+         || await rapidGet(`/search?q=${encodeURIComponent(nome)}`);
+  if (!j) return null;
+  try {
+    const results = j.results || j.teams || j.data || [];
+    const time = (Array.isArray(results) ? results : []).find(r =>
+      (r.entity?.name || r.name || '').toLowerCase().includes(nome.toLowerCase().slice(0,4)));
+    const id = time?.entity?.id || time?.id;
+    if (id) { setCache(chave, id); return id; }
+  } catch {}
+  return null;
+}
 
-  const stats = await statsTime(id1);
-  if (!stats) return [];
+// Estatísticas reais de um time. Retorna o que conseguir; null nos campos sem dado.
+async function statsTime(nome) {
+  const chave = `stats_${nome.toLowerCase()}`;
+  const cacheado = getCache(chave, 24);
+  if (cacheado) return cacheado;
+  if (!RAPID_KEY) return null;
 
-  const sugestoes = [];
-  if (stats.escanteiosMedia && stats.escanteiosMedia > 5) {
-    const linha = Math.floor(stats.escanteiosMedia + stats.escanteiosMedia) - 0.5; // linha do jogo (soma dos dois ~)
-    sugestoes.push({
+  const id = await buscarTimeId(nome);
+  if (!id) { console.log(`[STATS] time não encontrado: ${nome}`); return null; }
+
+  // tenta endpoints de estatística (tolerante)
+  const j = await rapidGet(`/v1/teams/get-statistics?teamId=${id}`)
+         || await rapidGet(`/teams/${id}/statistics`);
+
+  const dados = { id, escanteiosMedia: null, golsMarcadosMedia: null, golsSofridosMedia: null, artilheiro: null };
+  if (j) {
+    try {
+      const s = j.statistics || j.stats || j;
+      dados.escanteiosMedia = parseFloat(s.cornersAvg || s.corners || s.cornersPerGame) || null;
+      dados.golsMarcadosMedia = parseFloat(s.goalsScoredAvg || s.goalsFor) || null;
+      dados.golsSofridosMedia = parseFloat(s.goalsConcededAvg || s.goalsAgainst) || null;
+    } catch {}
+  }
+
+  // tenta pegar o artilheiro do time
+  const jp = await rapidGet(`/v1/teams/get-top-players?teamId=${id}`)
+          || await rapidGet(`/teams/${id}/top-players`);
+  if (jp) {
+    try {
+      const players = jp.topPlayers?.goals || jp.players || jp.data || [];
+      const top = (Array.isArray(players) ? players : [])[0];
+      if (top) dados.artilheiro = { nome: top.player?.name || top.name, gols: top.statistics?.goals || top.goals };
+    } catch {}
+  }
+
+  setCache(chave, dados);
+  return dados;
+}
+
+// Monta mercados ANALISADOS pra um jogo (real vs estimativa marcado)
+async function mercadosAnalisados(casa, fora) {
+  const sCasa = await statsTime(casa);
+  const sFora = await statsTime(fora);
+  const mercados = [];
+
+  // ESCANTEIOS (real se tiver média dos dois)
+  if (sCasa?.escanteiosMedia && sFora?.escanteiosMedia) {
+    const somaMedia = sCasa.escanteiosMedia + sFora.escanteiosMedia;
+    const linha = Math.floor(somaMedia) - 0.5; // linha conservadora abaixo da média
+    mercados.push({
       mercado: `+${linha.toFixed(1)} escanteios`,
-      odd: 1.85, // odd ilustrativa quando não vem da casa
-      justificativa: `média ~${stats.escanteiosMedia.toFixed(1)}/jogo`,
+      odd: 1.85,
+      tipo: 'REAL',
+      justificativa: `médias somadas ~${somaMedia.toFixed(1)}/jogo`,
     });
   }
-  if (stats.cartoesMedia && stats.cartoesMedia > 1.5) {
-    sugestoes.push({
-      mercado: `+3.5 cartões`,
-      odd: 2.0,
-      justificativa: `média ~${stats.cartoesMedia.toFixed(1)} cartões/jogo`,
+
+  // GOL DE ARTILHEIRO (real se achou o artilheiro)
+  const art = (sCasa?.artilheiro?.gols || 0) >= (sFora?.artilheiro?.gols || 0) ? sCasa?.artilheiro : sFora?.artilheiro;
+  if (art && art.nome) {
+    mercados.push({
+      mercado: `Gol de ${art.nome}`,
+      odd: 2.5,
+      tipo: 'REAL',
+      justificativa: `artilheiro do time (${art.gols || '?'} gols)`,
     });
   }
-  return sugestoes;
+
+  // GOLS NO JOGO (real se tiver média de gols)
+  if (sCasa?.golsMarcadosMedia && sFora?.golsMarcadosMedia) {
+    const totalEsperado = sCasa.golsMarcadosMedia + sFora.golsMarcadosMedia;
+    if (totalEsperado >= 2.5) {
+      mercados.push({
+        mercado: '+2.5 gols no jogo',
+        odd: 1.9,
+        tipo: 'REAL',
+        justificativa: `média combinada ~${totalEsperado.toFixed(1)} gols`,
+      });
+    }
+  }
+
+  return mercados;
 }
 
-module.exports = { statsTime, mercadosEstatisticos };
+module.exports = { statsTime, mercadosAnalisados, buscarTimeId };
