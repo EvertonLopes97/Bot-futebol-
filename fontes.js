@@ -91,4 +91,23 @@ function statusQuota() {
     restantes: QUOTA_DIARIA - usadasHoje, api: 'dadosfutebol.com.br (Free)' };
 }
 
-module.exports = { golsBackup, conciliar, podeUsarBackup, statusQuota };
+// Busca o último evento (autor do gol/cartão) via DadosFutebol.
+// Tolerante: se o plano não suporta ou falha, retorna null (não quebra o gol).
+async function ultimoEvento(jogo) {
+  if (!podeUsarBackup()) return null;
+  try {
+    const fetch = require('node-fetch');
+    // tenta endpoint de eventos da partida (plano free pode não ter)
+    const url = `https://api.dadosfutebol.com.br/v1/partidas/${jogo.id}/eventos`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${process.env.DADOSFUTEBOL_KEY}` } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const eventos = data.eventos || data.events || [];
+    const gols = eventos.filter(e => /gol|goal/i.test(e.tipo || e.type || ''));
+    const ultimo = gols[gols.length - 1];
+    if (ultimo) return { autorGol: ultimo.jogador || ultimo.player || ultimo.atleta || null };
+  } catch {}
+  return null;
+}
+
+module.exports = { golsBackup, conciliar, podeUsarBackup, statusQuota, ultimoEvento };
