@@ -57,11 +57,16 @@ function pontuar(partidaId, golsCasaReal, golsForaReal) {
   const resultados = {};
   for (const [userId, p] of Object.entries(palpitesPartida)) {
     let pts = 1; // participou
-    const acertouExato = p.golsCasa === golsCasaReal && p.golsFora === golsForaReal;
-    const acertouResultado = Math.sign(golsCasaReal - golsForaReal) === Math.sign(p.golsCasa - p.golsFora);
+    // garante comparação numérica (evita bug string vs number)
+    const pCasa = parseInt(p.golsCasa ?? p.palpite_casa ?? 0);
+    const pFora = parseInt(p.golsFora ?? p.palpite_fora ?? 0);
+    const rCasa = parseInt(golsCasaReal);
+    const rFora = parseInt(golsForaReal);
+    const acertouExato = pCasa === rCasa && pFora === rFora;
+    const acertouResultado = Math.sign(rCasa - rFora) === Math.sign(pCasa - pFora);
     if (acertouExato) pts = 10;
     else if (acertouResultado) pts = 3;
-    resultados[userId] = { nome: p.nome, pts, acertouExato, acertouResultado };
+    resultados[userId] = { nome: p.nome, pts, acertouExato, acertouResultado, palpiteCasa: pCasa, palpiteFora: pFora };
   }
   dados.partidas[partidaId] = { ...partida, encerrada: true, golsCasaReal, golsForaReal, pontuados: resultados };
   salvar(dados);
