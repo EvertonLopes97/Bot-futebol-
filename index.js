@@ -268,6 +268,9 @@ async function checarAoVivo() {
         const resultados = db.pontuar(key, jogo.golsCasa, jogo.golsFora);
         const chR = canal(CH.ranking);
         if (chR && Object.keys(resultados).length > 0) chR.send({ embeds: [embedRanking(db.ranking())] }).catch(() => {});
+        // grava o ranking atualizado no Supabase (loga)
+        sync.syncRanking(db.ranking().slice(0, 50));
+        console.log(`[PONTUACAO] jogo ${key} pontuado: ${Object.keys(resultados).length} palpite(s)`);
       }
 
       // Marca jogo ativo (sem postar parciais)
@@ -679,6 +682,7 @@ client.on('interactionCreate', async interaction => {
       const resultados = db.pontuar(pid, gc, gf);
       const chR = canal(CH.ranking);
       if (chR) chR.send({ embeds: [embedRanking(db.ranking())] }).catch(() => {});
+      sync.syncRanking(db.ranking().slice(0, 50)); // grava no Supabase (loga)
       await interaction.editReply(`✅ Resultado registrado! ${Object.keys(resultados).length} palpite(s) pontuado(s).`);
     }
   } catch (e) {

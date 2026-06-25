@@ -10,7 +10,11 @@ function init() {
   }
   try {
     const { createClient } = require('@supabase/supabase-js');
-    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+    // realtime desativado: o bot só escreve/lê, não precisa de WebSocket
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
+      realtime: { params: { eventsPerSecond: 0 } },
+      auth: { persistSession: false },
+    });
     console.log('[SYNC] ✅ Supabase conectado para sincronização estruturada.');
     return true;
   } catch (e) {

@@ -30,7 +30,10 @@ async function initSupabase() {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) return;
   try {
     const { createClient } = require('@supabase/supabase-js');
-    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
+      realtime: { params: { eventsPerSecond: 0 } },
+      auth: { persistSession: false },
+    });
     console.log('✅ Supabase conectado');
   } catch (e) { console.error('[SUPABASE] erro:', e.message); }
 }
