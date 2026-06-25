@@ -160,4 +160,39 @@ async function salvarGreen(descricao, odd, jogo) {
   } catch (e) { console.error('[GREEN] ❌ exceção:', e.message); }
 }
 
-module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, salvarGreen };
+module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, salvarGreen, salvarOddsDoDia, marcarGreen };
+
+// Salva as odds do dia no Supabase (ficam ativas até meia-noite)
+async function salvarOddsDoDia(odds) {
+  if (!supabase || !odds || !odds.length) return;
+  try {
+    const hoje = new Date().toISOString().split('T')[0];
+    // limpa as do dia anterior e salva as novas
+    await supabase.from('odds_dia').delete().lt('data', hoje);
+    const linhas = odds.map(j => ({
+      data: hoje,
+      jogo: `${j.casa} x ${j.fora}`,
+      favorito: j.melhor.casa.odd <= (j.melhor.fora.odd||99) ? j.casa : j.fora,
+      odd_favorito: Math.min(j.melhor.casa.odd||99, j.melhor.fora.odd||99),
+      odd_casa: j.melhor.casa.odd, odd_fora: j.melhor.fora.odd,
+      book: j.melhor.casa.book || j.melhor.fora.book,
+      green: false,
+    }));
+    const { error } = await supabase.from('odds_dia').upsert(linhas, { onConflict: 'data,jogo' });
+    if (error) console.error('[SYNC] ❌ odds_dia:', error.message);
+    else console.log(`[SYNC] ✅ ${linhas.length} odds do dia salvas.`);
+  } catch (e) { console.error('[SYNC] ❌ odds_dia exceção:', e.message); }
+}
+
+// Marca uma odd como green
+async function marcarGreen(jogo, descricao, odd) {
+  if (!supabase) return;
+  try {
+    const hoje = new Date().toISOString().split('T')[0];
+    await supabase.from('odds_dia').update({ green: true }).eq('data', hoje).eq('jogo', jogo);
+    // também salva na tabela de histórico de greens
+    const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
+    await supabase.from('odds_green').insert({ descricao, odd, jogo, fixado_ate: amanha.toISOString().split('T')[0] });
+    console.log(`[SYNC] ✅ green marcado: ${jogo}`);
+  } catch (e) { console.error('[SYNC] ❌ green:', e.message); }
+}

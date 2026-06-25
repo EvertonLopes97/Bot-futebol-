@@ -90,4 +90,51 @@ function dadosPartida(partidaId) {
   return dados.partidas[partidaId] || null;
 }
 
-module.exports = { registrar, fecharPalpites, pontuar, ranking, dadosPartida };
+function meusPalpites(userId) {
+  const dados = carregar();
+  const resultado = [];
+  for (const [partidaId, palpitesPartida] of Object.entries(dados.palpites || {})) {
+    if (!palpitesPartida[userId]) continue;
+    const p = palpitesPartida[userId];
+    const partida = dados.partidas[partidaId] || {};
+    const pontuado = partida.pontuados?.[userId];
+    resultado.push({
+      partidaId,
+      casa: partida.nomeCasa || '?',
+      fora: partida.nomeFora || '?',
+      palpiteCasa: p.golsCasa,
+      palpiteFora: p.golsFora,
+      criadoEm: p.criadoEm,
+      fechado: !!partida.fechada,
+      encerrado: !!partida.encerrada,
+      golsCasaReal: partida.golsCasaReal ?? null,
+      golsForaReal: partida.golsForaReal ?? null,
+      pts: pontuado?.pts ?? null,
+      acertouExato: pontuado?.acertouExato ?? null,
+      acertouResultado: pontuado?.acertouResultado ?? null,
+    });
+  }
+  return resultado.sort((a,b) => new Date(b.criadoEm) - new Date(a.criadoEm));
+}
+
+function todosOsPalpitesDoDia(jogosHoje) {
+  const dados = carregar();
+  const ids = jogosHoje.map(j => String(j.id));
+  const resultado = [];
+  for (const partidaId of ids) {
+    const palpitesPartida = dados.palpites[partidaId] || {};
+    const partida = dados.partidas[partidaId] || {};
+    for (const [userId, p] of Object.entries(palpitesPartida)) {
+      const pontuado = partida.pontuados?.[userId];
+      resultado.push({
+        userId, nome: p.nome,
+        casa: partida.nomeCasa || '?', fora: partida.nomeFora || '?',
+        palpiteCasa: p.golsCasa, palpiteFora: p.golsFora,
+        pts: pontuado?.pts ?? null, acertouExato: pontuado?.acertouExato ?? null,
+      });
+    }
+  }
+  return resultado;
+}
+
+module.exports = { registrar, fecharPalpites, pontuar, ranking, dadosPartida, meusPalpites, todosOsPalpitesDoDia };

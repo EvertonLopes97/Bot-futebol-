@@ -43,7 +43,7 @@ async function iniciarWhatsApp(forcarReset = false) {
     version,
     auth: state,
     printQRInTerminal: false,
-    logger: pino({ level: 'silent' }),
+    logger: pino({ level: 'fatal' }), // silencia tudo exceto erros críticos
     browser: Browsers ? Browsers.ubuntu('Chrome') : ['HubLab Bot', 'Chrome', '1.0'],
     // importante para pairing code funcionar
     markOnlineOnConnect: false,

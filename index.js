@@ -30,12 +30,13 @@ const client = new Client({ intents: [
 ] });
 
 const CH = {
-  gols:     process.env.CANAL_GOLS,
-  jogos:    process.env.CANAL_JOGOS,
-  tabela:   process.env.CANAL_TABELA,
-  palpites: process.env.CANAL_PALPITES,
-  ranking:  process.env.CANAL_RANKING,
-  niveis:   process.env.CANAL_NIVEIS,
+  gols:       process.env.CANAL_GOLS,
+  jogos:      process.env.CANAL_JOGOS,
+  tabela:     process.env.CANAL_TABELA,
+  palpites:   process.env.CANAL_PALPITES,
+  ranking:    process.env.CANAL_RANKING,
+  niveis:     process.env.CANAL_NIVEIS,
+  fundadores: process.env.CANAL_FUNDADORES, // canal privado dos fundadores
 };
 const CARGO_VIP = process.env.CARGO_VIP || 'VIP';
 const AVISO_APOSTA = '⚠️ +18. Conteúdo recreativo e educativo, não é recomendação de aposta. Apostas envolvem risco de perda. Jogue com responsabilidade. Se precisar de ajuda: 0800 redes de apoio ao jogador.';
@@ -512,6 +513,7 @@ async function entregaOdds(titulo) {
     }
     textoWpp += `\n🔞 +18. Conteúdo recreativo, não é recomendação.\n👉 Análise completa no Discord: ${LINK_DISCORD}`;
     wa.enviar(textoWpp);
+    sync.salvarOddsDoDia(jogos); // persiste no Supabase p/ o site
   } else {
     wa.enviar(`📢 *${titulo || 'Odds do dia'}*\n\nSem odds disponíveis agora. Confira no Discord: ${LINK_DISCORD}`);
   }
@@ -588,6 +590,8 @@ const comandos = [
     .addStringOption(o => o.setName('descricao').setDescription('Ex: Brasil vence + 2.5 gols').setRequired(true))
     .addNumberOption(o => o.setName('odd').setDescription('A odd que pagou').setRequired(true))
     .addStringOption(o => o.setName('jogo').setDescription('Qual jogo').setRequired(false)),
+  new SlashCommandBuilder().setName('relatorio').setDescription('(Staff) Posta relatório do dia no canal fundadores'),
+  new SlashCommandBuilder().setName('meuspalpites').setDescription('Veja todos os seus palpites e resultados'),
   new SlashCommandBuilder().setName('resultado').setDescription('(Staff) Registra resultado manualmente')
     .addStringOption(o => o.setName('partida_id').setDescription('ID da partida').setRequired(true))
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols casa').setRequired(true).setMinValue(0).setMaxValue(20))
@@ -679,6 +683,71 @@ client.on('interactionCreate', async interaction => {
       const embeds = await dica.montarMultiplasProntas(jogos, estat);
       if (!embeds.length) { await interaction.editReply('Não consegui montar múltiplas agora.'); return; }
       await interaction.editReply({ embeds });
+    } else if (commandName === 'green') {
+      const membroG = await interaction.guild.members.fetch(interaction.user.id);
+      const ehStaffG = membroG.permissions.has(PermissionsBitField.Flags.Administrator)
+        || membroG.roles.cache.some(r => /fundador|moderador/i.test(r.name));
+      if (!ehStaffG) return interaction.editReply('❌ Só a staff pode marcar green.');
+      const descG = interaction.options.getString('descricao');
+      const oddG = interaction.options.getNumber('odd');
+      const jogoG = interaction.options.getString('jogo') || '';
+      sync.salvarGreen(descG, oddG, jogoG);
+      sync.marcarGreen(jogoG, descG, oddG);
+      const chA = canal(CANAL_APOSTAS);
+      const msgG = `🟢 **GREEN!** ${descG} ${jogoG ? `(${jogoG})` : ''} pagou **${oddG}**! 🔞 +18, jogo responsável.`;
+      if (chA) chA.send(msgG).catch(() => {});
+      wa.enviar(`🟢 *GREEN!* ${descG} pagou ${oddG}!\n\n👉 ${LINK_DISCORD}`);
+      await interaction.editReply('✅ Green registrado e fixado no site!');
+
+    } else if (commandName === 'relatorio') {
+      const chF = canal(CH.fundadores);
+      if (!chF) return interaction.editReply('❌ Configure a variável CANAL_FUNDADORES no Railway.');
+      const jogosHoje = await api.jogosDoDia();
+      const todosPalpites = db.todosOsPalpitesDoDia(jogosHoje);
+      const rankingHoje = db.ranking();
+      // agrupa por jogo
+      const porJogo = {};
+      for (const p of todosPalpites) {
+        const k = `${p.casa} x ${p.fora}`;
+        if (!porJogo[k]) porJogo[k] = [];
+        porJogo[k].push(p);
+      }
+      let desc = `📅 **Relatório do dia — ${new Date().toLocaleDateString('pt-BR')}**\n\n`;
+      desc += `👥 **Total de palpites:** ${todosPalpites.length}\n`;
+      desc += `💰 **Palpites com acesso pago:** (verificar no site)\n\n`;
+      for (const [jogo, palps] of Object.entries(porJogo)) {
+        desc += `⚽ **${jogo}** — ${palps.length} palpites\n`;
+        for (const p of palps) {
+          const pts = p.pts !== null ? ` → ${p.pts}pts ${p.acertouExato ? '🎯 EXATO' : ''}` : '';
+          desc += `  • ${p.nome}: ${p.palpiteCasa}x${p.palpiteFora}${pts}\n`;
+        }
+        desc += '\n';
+      }
+      desc += `\n🏆 **Ranking geral:**\n`;
+      rankingHoje.slice(0,10).forEach((r,i) => { desc += `${i+1}. ${r.nome} — ${r.pts}pts\n`; });
+      const embed = new EmbedBuilder().setColor(0xFFCF00).setTitle('📊 Relatório Hub Lab C.O')
+        .setDescription(desc.slice(0, 4000))
+        .setFooter({ text: `Gerado em ${new Date().toLocaleString('pt-BR')}` });
+      await chF.send({ embeds: [embed] });
+      await interaction.editReply('✅ Relatório postado no canal fundadores!');
+
+    } else if (commandName === 'meuspalpites') {
+      const meusPalps = db.meusPalpites(interaction.user.id);
+      if (!meusPalps.length) return interaction.editReply('Você ainda não fez nenhum palpite. Use **/palpite** pra começar!');
+      const linhas = meusPalps.slice(0, 15).map(p => {
+        const status = p.encerrado
+          ? (p.acertouExato ? '🎯 EXATO' : p.acertouResultado ? '✅ Resultado' : '❌ Errou')
+          : (p.fechado ? '🔒 Fechado' : '✏️ Alterável');
+        const resultado = p.encerrado && p.golsCasaReal !== null ? ` (Real: ${p.golsCasaReal}x${p.golsForaReal})` : '';
+        const pts = p.pts !== null ? ` | ${p.pts}pts` : '';
+        return `• **${p.casa} x ${p.fora}**: ${p.palpiteCasa}x${p.palpiteFora} ${status}${resultado}${pts}`;
+      }).join('\n');
+      const embed = new EmbedBuilder().setColor(COR_LIME)
+        .setTitle(`🎯 Meus Palpites — ${interaction.user.username}`)
+        .setDescription(linhas)
+        .setFooter({ text: '✏️ Alterável = você ainda pode mudar com /palpite' });
+      await interaction.editReply({ embeds: [embed] });
+
     } else if (commandName === 'ganhador') {
       const membro = await interaction.guild.members.fetch(interaction.user.id);
       const ehStaff = membro.permissions.has(PermissionsBitField.Flags.Administrator)

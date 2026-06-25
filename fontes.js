@@ -8,6 +8,7 @@ const fetch = require('node-fetch');
 const QUOTA_DIARIA = parseInt(process.env.DF_QUOTA_DIA || '80');
 let usadasHoje = 0;
 let diaAtual = new Date().toISOString().split('T')[0];
+let pausa429 = 0; // timestamp até quando o backup fica pausado após 429
 
 function resetSeNovoDia() {
   const hoje = new Date().toISOString().split('T')[0];
@@ -15,6 +16,7 @@ function resetSeNovoDia() {
 }
 function podeUsarBackup() {
   resetSeNovoDia();
+  if (pausa429 && Date.now() < pausa429) return false; // pausado por 429
   return !!(process.env.DADOSFUTEBOL_KEY) && usadasHoje < QUOTA_DIARIA;
 }
 
@@ -42,6 +44,7 @@ async function golsBackup() {
         // 403 = endpoint não disponível no plano, 404 = campeonato não existe
         if (res.status === 403) { console.log(`[BACKUP] camp ${id}: requer plano Pro`); continue; }
         if (res.status === 404) { console.log(`[BACKUP] camp ${id}: não encontrado`); continue; }
+        if (res.status === 429) { console.log(`[BACKUP] cota esgotada, pausando backup por 1h`); pausa429 = Date.now() + 3600000; break; }
         console.log(`[BACKUP] camp ${id}: status ${res.status}`); continue;
       }
       const j = await res.json();
