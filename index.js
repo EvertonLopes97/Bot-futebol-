@@ -204,6 +204,11 @@ async function checarAoVivo() {
     // LOG DE DIAGNÓSTICO: mostra o que o monitor está vendo a cada ciclo
     servidor.setEstado('jogosHoje', jogos);
     servidor.setEstado('aoVivo', jogos.filter(j => j.golsCasa !== null && j.status !== 'FINISHED'));
+    // número de membros do servidor Discord
+    try {
+      const guild = client.guilds.cache.first();
+      if (guild) servidor.setEstado('membros', guild.memberCount);
+    } catch {}
     try {
       const rk = db.ranking().slice(0, 50);
       servidor.setEstado('ranking', rk.slice(0, 20));

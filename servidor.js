@@ -11,6 +11,7 @@ const estado = {
   ranking: [],
   rankingXP: [],
   bolaoExato: null,
+  membros: 0,
   atualizadoEm: null,
 };
 
@@ -42,6 +43,9 @@ function iniciarServidor(porta) {
     } else if (url === '/api/dica') {
       res.writeHead(200);
       res.end(JSON.stringify({ dica: estado.ultimaDica, multiplas: estado.multiplas, atualizadoEm: estado.atualizadoEm }));
+    } else if (url === '/api/membros') {
+      res.writeHead(200);
+      res.end(JSON.stringify({ membros: estado.membros }));
     } else if (url === '/api/bolao-exato') {
       res.writeHead(200);
       res.end(JSON.stringify({ bolao: estado.bolaoExato, atualizadoEm: estado.atualizadoEm }));
