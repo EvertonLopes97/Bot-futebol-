@@ -62,10 +62,11 @@ function embedJogosDoDia(jogos) {
     .setFooter({ text: 'Hub Lab C.O • Use /palpite pra palpitar!' }).setTimestamp();
 }
 function embedGol(j) {
-  return new EmbedBuilder().setColor(COR_GOL).setTitle('⚽ GOOOOL!')
-    .setDescription(`## ${j.casa} **${j.golsCasa}** x **${j.golsFora}** ${j.fora}`)
-    .addFields({ name: '🕐 Minuto', value: `${j.minuto}'`, inline: true })
+  const e = new EmbedBuilder().setColor(COR_GOL).setTitle('⚽ GOOOOL!')
+    .setDescription(`## ${j.casa} **${j.golsCasa}** x **${j.golsFora}** ${j.fora}${j.autor || ''}`)
     .setFooter({ text: 'Hub Lab C.O • Copa do Mundo' }).setTimestamp();
+  if (j.minuto && j.minuto !== '—') e.addFields({ name: '🕐 Minuto', value: `${j.minuto}'`, inline: true });
+  return e;
 }
 function embedFimDeJogo(j) {
   const v = j.golsCasa > j.golsFora ? j.casa : j.golsFora > j.golsCasa ? j.fora : 'Empate';
@@ -222,7 +223,7 @@ async function checarAoVivo() {
 👉 Palpita e acompanha no Discord: ${LINK_DISCORD}`);
       }
 
-      // ── GOL / PLACAR AO VIVO: dispara SEMPRE que o placar muda, na janela de 2h30 ──
+      // ── GOL AO VIVO: avisa na hora; se anular, corrige ──
       if (backup && status !== 'FINISHED' && jogo.golsCasa !== null) {
         const conc = fontes.conciliar(jogo, backup);
         jogo.golsCasa = conc.golsCasa;
@@ -231,18 +232,30 @@ async function checarAoVivo() {
       const golsAtual = (jogo.golsCasa ?? 0) + '-' + (jogo.golsFora ?? 0);
       const inicio = horaInicioJogo[key];
       const dentroDaJanela = inicio && (Date.now() - inicio) <= (2.5 * 60 * 60 * 1000); // 2h30
-      // dispara se o placar mudou em relação ao guardado (gol detectado nas consultas)
-      if (ant !== undefined && jogo.golsCasa !== null && ant.placar !== golsAtual && status !== 'FINISHED') {
-        if (chGols) chGols.send({ embeds: [embedGol({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora, minuto: '—' })] }).catch(() => {});
-        wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}
 
-👉 ${LINK_DISCORD}`);
+      if (ant !== undefined && jogo.golsCasa !== null && status !== 'FINISHED') {
+        const totalAtual = (jogo.golsCasa ?? 0) + (jogo.golsFora ?? 0);
+        const totalAnt = ant.totalGols ?? 0;
+
+        if (totalAtual > totalAnt) {
+          // GOL — avisa na hora (Opção A)
+          let autor = '';
+          try {
+            const ev = await fontes.ultimoEvento(jogo);  // DadosFutebol: autor/cartão
+            if (ev && ev.autorGol) autor = `\n🎯 Gol de **${ev.autorGol}**`;
+          } catch {}
+          if (chGols) chGols.send({ embeds: [embedGol({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora, minuto: '—', autor })] }).catch(() => {});
+          wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}${autor ? `\n${autor.replace(/\*/g,'')}` : ''}\n\n👉 ${LINK_DISCORD}`);
+        } else if (totalAtual < totalAnt) {
+          // GOL ANULADO — o placar diminuiu
+          if (chGols) chGols.send(`❌ **Gol anulado!** ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}`).catch(() => {});
+          wa.enviar(`❌ *Gol anulado!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}`);
+        }
       }
 
       // ── FIM DE JOGO: status virou FINISHED e ainda não processamos ──
       if (status === 'FINISHED' && !jogosEncerrados.has(key) && jogo.golsCasa !== null) {
         jogosEncerrados.add(key);
-        // garante que o jogo foi registrado p/ pontuar os palpites
         if (!palpitesFechados.has(key)) { db.fecharPalpites(key, jogo.casa, jogo.fora); palpitesFechados.add(key); }
         if (chGols) chGols.send({ embeds: [embedFimDeJogo({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora })] }).catch(() => {});
         wa.enviar(`🏁 *FIM!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}
@@ -253,20 +266,11 @@ async function checarAoVivo() {
         if (chR && Object.keys(resultados).length > 0) chR.send({ embeds: [embedRanking(db.ranking())] }).catch(() => {});
       }
 
-      // ── PLACAR PERIÓDICO: enquanto estiver na janela de 2h30 pós-início, posta a cada 2 min ──
-      const emAndamento = comecou && status !== 'FINISHED' && jogo.golsCasa !== null && dentroDaJanela;
-      if (emAndamento) {
-        temAtivo = true;
-        const agora = Date.now();
-        const ultimo = ultimoPlacarPostado[key] || 0;
-        if (agora - ultimo >= 2 * 60 * 1000) { // 2 minutos
-          ultimoPlacarPostado[key] = agora;
-          if (chGols) chGols.send(`⏱️ **Parcial:** ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora} — jogo em andamento`).catch(() => {});
-        }
-      }
+      // Marca jogo ativo (sem postar parciais)
+      if (comecou && status !== 'FINISHED' && jogo.golsCasa !== null && dentroDaJanela) temAtivo = true;
 
-      // Atualiza o baseline
-      if (jogo.golsCasa !== null) placarAnterior[key] = { placar: golsAtual, status };
+      // Atualiza o baseline (guarda total de gols p/ comparar)
+      if (jogo.golsCasa !== null) placarAnterior[key] = { placar: golsAtual, status, totalGols: (jogo.golsCasa ?? 0) + (jogo.golsFora ?? 0) };
     }
 
     // Frequência: tem jogo em andamento → 2 min; senão se há jogo hoje → 5 min; senão → 15 min
@@ -454,14 +458,24 @@ client.on('guildMemberAdd', async member => {
 async function entregaOdds(titulo) {
   const dicaEmbed = await montarDicaDoDia();
   const ch = canal(CANAL_APOSTAS) || canal(CH.palpites);
-  if (!ch) return;
-  if (titulo) ch.send(`📢 **${titulo}**`).catch(() => {});
-  if (dicaEmbed) ch.send({ embeds: [dicaEmbed] }).catch(() => {});
+  if (titulo && ch) ch.send(`📢 **${titulo}**`).catch(() => {});
+  if (dicaEmbed && ch) ch.send({ embeds: [dicaEmbed] }).catch(() => {});
   // múltiplas prontas junto
   const jogos = await dica.buscarOddsDoDia();
+  let textoWpp = `📢 *${titulo || 'Odds do dia'}*\n\n`;
   if (jogos.length) {
     const mults = dica.montarMultiplasProntas(jogos);
-    if (mults.length) ch.send({ embeds: mults }).catch(() => {});
+    if (mults.length && ch) ch.send({ embeds: mults }).catch(() => {});
+    // monta texto das odds pro WhatsApp
+    for (const j of jogos.slice(0, 5)) {
+      const fav = j.melhor.casa.odd && j.melhor.casa.odd <= (j.melhor.fora.odd || 99)
+        ? `${j.casa} @ ${j.melhor.casa.odd}` : `${j.fora} @ ${j.melhor.fora.odd}`;
+      textoWpp += `⚽ ${j.casa} x ${j.fora}\n   Favorito: ${fav}\n`;
+    }
+    textoWpp += `\n🔞 +18. Conteúdo recreativo, não é recomendação.\n👉 Análise completa no Discord: ${LINK_DISCORD}`;
+    wa.enviar(textoWpp);
+  } else {
+    wa.enviar(`📢 *${titulo || 'Odds do dia'}*\n\nSem odds disponíveis agora. Confira no Discord: ${LINK_DISCORD}`);
   }
 }
 // (Os disparos de 11h e 20h agora são feitos pelo agendador robusto lá em cima)
@@ -526,10 +540,9 @@ const comandos = [
   new SlashCommandBuilder().setName('ganhador').setDescription('(Staff) Marca o ganhador do dia (+50 XP)')
     .addUserOption(o => o.setName('membro').setDescription('Ganhador do dia').setRequired(true)),
   new SlashCommandBuilder().setName('palpite').setDescription('Dê seu palpite para um jogo')
-    .addStringOption(o => o.setName('time_casa').setDescription('Time da casa (ex: Brasil)').setRequired(true))
+    .addStringOption(o => o.setName('jogo').setDescription('Escolha o jogo').setRequired(true).setAutocomplete(true))
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols do time da casa').setRequired(true).setMinValue(0).setMaxValue(20))
-    .addIntegerOption(o => o.setName('gols_fora').setDescription('Gols do time de fora').setRequired(true).setMinValue(0).setMaxValue(20))
-    .addStringOption(o => o.setName('time_fora').setDescription('Time de fora (ex: Argentina)').setRequired(true)),
+    .addIntegerOption(o => o.setName('gols_fora').setDescription('Gols do time de fora').setRequired(true).setMinValue(0).setMaxValue(20)),
   new SlashCommandBuilder().setName('resultado').setDescription('(Staff) Registra resultado manualmente')
     .addStringOption(o => o.setName('partida_id').setDescription('ID da partida').setRequired(true))
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols casa').setRequired(true).setMinValue(0).setMaxValue(20))
@@ -551,6 +564,19 @@ async function registrarComandos() {
 }
 
 client.on('interactionCreate', async interaction => {
+  // Autocomplete: lista os jogos do dia pro /palpite
+  if (interaction.isAutocomplete()) {
+    try {
+      const jogos = await api.jogosDoDia();
+      const foco = (interaction.options.getFocused() || '').toLowerCase();
+      const opcoes = jogos
+        .filter(j => !foco || j.casa.toLowerCase().includes(foco) || j.fora.toLowerCase().includes(foco))
+        .slice(0, 25)
+        .map(j => ({ name: `${j.casa} x ${j.fora} (${j.hora})`.slice(0, 100), value: String(j.id) }));
+      await interaction.respond(opcoes);
+    } catch { try { await interaction.respond([]); } catch {} }
+    return;
+  }
   if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
   // Bloqueia comando em canal errado (staff sempre pode)
@@ -620,14 +646,12 @@ client.on('interactionCreate', async interaction => {
       if (chN) chN.send(`🏆 **Ganhador do dia:** <@${alvo.id}>! +50 XP 🎉`).catch(() => {});
       await interaction.editReply(`✅ ${alvo.username} marcado como ganhador do dia!`);
     } else if (commandName === 'palpite') {
-      const tc = interaction.options.getString('time_casa');
-      const tf = interaction.options.getString('time_fora');
+      const jogoId = interaction.options.getString('jogo');
       const gc = interaction.options.getInteger('gols_casa');
       const gf = interaction.options.getInteger('gols_fora');
       const jogos = await api.jogosDoDia();
-      const jogo = jogos.find(j =>
-        j.casa.toLowerCase().includes(tc.toLowerCase()) || j.fora.toLowerCase().includes(tf.toLowerCase()));
-      if (!jogo) return interaction.editReply('❌ Jogo não encontrado hoje. Use **/jogos** pra ver os disponíveis.');
+      const jogo = jogos.find(j => String(j.id) === jogoId);
+      if (!jogo) return interaction.editReply('❌ Jogo não encontrado. Use **/jogos** pra ver os disponíveis.');
       const res = db.registrar(interaction.user.id, interaction.user.username, String(jogo.id), gc, gf);
       if (res === 'fechado' || res === 'encerrado')
         return interaction.editReply(`🔒 Palpites já fechados para **${jogo.casa} x ${jogo.fora}**!`);
