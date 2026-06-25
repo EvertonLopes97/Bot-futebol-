@@ -146,6 +146,23 @@ async function agendaDoDia() {
   const lista = jogos.map(j => `• ${j.casa} x ${j.fora} (${j.hora})`).join('\n');
   wa.enviar(`⚽ *JOGOS DE HOJE — Copa do Mundo*\n${lista}\n\n👉 Palpita no Discord: ${LINK_DISCORD}`);
   console.log(`[AGENDA] disparada com ${jogos.length} jogos`);
+
+  // ── BOLÃO EXATO DO DIA: escolhe o jogo mais popular ──
+  try {
+    const ordenados = jogos
+      .map(j => ({ ...j, score: dica.relevanciaJogo(j) }))
+      .sort((a, b) => b.score - a.score);
+    const escolhido = ordenados[0];
+    if (escolhido) {
+      const bolao = await sync.definirBolaoExato(escolhido);
+      if (bolao) {
+        servidor.setEstado('bolaoExato', bolao);
+        const msg = `🎯 **BOLÃO EXATO DO DIA!**\n\n**${escolhido.casa} x ${escolhido.fora}**\n\nCrave o **placar exato** e vire o 👑 Rei do Exato! Use **/exato** pra palpitar.`;
+        ch.send(msg).catch(() => {});
+        wa.enviar(`🎯 *BOLÃO EXATO DO DIA!*\n\n${escolhido.casa} x ${escolhido.fora}\n\nCrave o placar exato no Discord: ${LINK_DISCORD}`);
+      }
+    }
+  } catch (e) { console.error('[EXATO] erro ao definir bolão:', e.message); }
 }
 
 // Verificador que roda a cada minuto e dispara as tarefas no horário certo de Brasília
@@ -271,6 +288,14 @@ async function checarAoVivo() {
         // grava o ranking atualizado no Supabase (loga)
         sync.syncRanking(db.ranking().slice(0, 50));
         console.log(`[PONTUACAO] jogo ${key} pontuado: ${Object.keys(resultados).length} palpite(s)`);
+        // apura o bolão exato (se este era o jogo do dia)
+        sync.apurarBolaoExato(String(jogo.id), jogo.golsCasa, jogo.golsFora).then(cravaram => {
+          if (cravaram && cravaram.length && chGols) {
+            const nomes = cravaram.map(c => c.nome).join(', ');
+            chGols.send(`🎯👑 **BOLÃO EXATO!** ${nomes} cravou o placar ${jogo.golsCasa}x${jogo.golsFora} de ${jogo.casa} x ${jogo.fora}! Novo Rei do Exato!`).catch(() => {});
+            wa.enviar(`🎯👑 *BOLÃO EXATO!* ${nomes} cravou ${jogo.golsCasa}x${jogo.golsFora}! Confira: ${LINK_DISCORD}`);
+          }
+        });
       }
 
       // Marca jogo ativo (sem postar parciais)
@@ -550,6 +575,13 @@ const comandos = [
     .addStringOption(o => o.setName('jogo').setDescription('Escolha o jogo').setRequired(true).setAutocomplete(true))
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols do time da casa').setRequired(true).setMinValue(0).setMaxValue(20))
     .addIntegerOption(o => o.setName('gols_fora').setDescription('Gols do time de fora').setRequired(true).setMinValue(0).setMaxValue(20)),
+  new SlashCommandBuilder().setName('exato').setDescription('Palpite no Bolão Exato do dia (crave o placar!)')
+    .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols do time da casa').setRequired(true).setMinValue(0).setMaxValue(20))
+    .addIntegerOption(o => o.setName('gols_fora').setDescription('Gols do time de fora').setRequired(true).setMinValue(0).setMaxValue(20)),
+  new SlashCommandBuilder().setName('green').setDescription('(Staff) Marca uma odd que deu GREEN (fixa no site)')
+    .addStringOption(o => o.setName('descricao').setDescription('Ex: Brasil vence + 2.5 gols').setRequired(true))
+    .addNumberOption(o => o.setName('odd').setDescription('A odd que pagou').setRequired(true))
+    .addStringOption(o => o.setName('jogo').setDescription('Qual jogo').setRequired(false)),
   new SlashCommandBuilder().setName('resultado').setDescription('(Staff) Registra resultado manualmente')
     .addStringOption(o => o.setName('partida_id').setDescription('ID da partida').setRequired(true))
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols casa').setRequired(true).setMinValue(0).setMaxValue(20))
@@ -670,7 +702,21 @@ client.on('interactionCreate', async interaction => {
           { name: '🕐 Jogo', value: `${jogo.hora} (Brasília)`, inline: true })
         .setFooter({ text: 'Hub Lab C.O • Exato = 10pts | Resultado = 3pts' });
       await interaction.editReply({ embeds: [embed] });
-    } else if (commandName === 'resultado') {
+    } else if (commandName === 'exato') {
+      const egc = interaction.options.getInteger('gols_casa');
+      const egf = interaction.options.getInteger('gols_fora');
+      const hoje = new Date().toISOString().split('T')[0];
+      let bolao = null;
+      try {
+        const r = await fetch(`http://localhost:${process.env.PORT || 8080}/api/bolao-exato`);
+        if (r.ok) { const d = await r.json(); bolao = d.bolao; }
+      } catch {}
+      if (!bolao) return interaction.editReply('❌ O bolão exato de hoje ainda não foi definido. Aguarde a agenda das 11h!');
+      sync.salvarPalpiteExato(bolao.id, interaction.user.id, interaction.user.username, egc, egf);
+      const embed = new EmbedBuilder().setColor(0xFF2E63).setTitle('🎯 Palpite no Bolão Exato!')
+        .setDescription(`**${bolao.time_casa} ${egc} x ${egf} ${bolao.time_fora}**`)
+        .setFooter({ text: 'Crave o exato e vire o 👑 Rei do Exato!' });
+      await interaction.editReply({ embeds: [embed] });
       const membro = await interaction.guild.members.fetch(interaction.user.id);
       const ehStaff = membro.permissions.has(PermissionsBitField.Flags.Administrator)
         || membro.roles.cache.some(r => /fundador|moderador/i.test(r.name));

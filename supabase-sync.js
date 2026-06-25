@@ -79,4 +79,85 @@ async function syncPalpite(discordId, nome, jogoId, golsCasa, golsFora) {
   } catch (e) { console.error('[SYNC] ❌ palpite exceção:', e.message); }
 }
 
-module.exports = { init, syncRanking, syncJogos, syncPalpite };
+// ── BOLÃO EXATO DIÁRIO ──
+// Define o jogo do dia (mais popular). Retorna o bolão criado.
+async function definirBolaoExato(jogo) {
+  if (!supabase) return null;
+  try {
+    const hoje = new Date().toISOString().split('T')[0];
+    const { data, error } = await supabase.from('bolao_exato').upsert({
+      data: hoje,
+      jogo_api_id: String(jogo.id),
+      time_casa: jogo.casa,
+      time_fora: jogo.fora,
+    }, { onConflict: 'data' }).select().single();
+    if (error) { console.error('[EXATO] ❌ definir:', error.message); return null; }
+    console.log(`[EXATO] ✅ bolão do dia: ${jogo.casa} x ${jogo.fora}`);
+    return data;
+  } catch (e) { console.error('[EXATO] ❌ exceção:', e.message); return null; }
+}
+
+// Salva palpite no bolão exato
+async function salvarPalpiteExato(bolaoId, discordId, nome, gc, gf) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from('palpites_exato').upsert({
+      bolao_id: bolaoId, discord_id: String(discordId), nome,
+      palpite_casa: gc, palpite_fora: gf,
+    }, { onConflict: 'bolao_id,discord_id' });
+    if (error) console.error('[EXATO] ❌ palpite:', error.message);
+    else console.log(`[EXATO] ✅ palpite exato: ${nome} ${gc}x${gf}`);
+  } catch (e) { console.error('[EXATO] ❌ palpite exceção:', e.message); }
+}
+
+// Quando o jogo do bolão acaba: marca quem cravou e atualiza o "rei do exato"
+async function apurarBolaoExato(jogoApiId, golsCasa, golsFora) {
+  if (!supabase) return [];
+  try {
+    const { data: bolao } = await supabase.from('bolao_exato')
+      .select('*').eq('jogo_api_id', String(jogoApiId)).maybeSingle();
+    if (!bolao || bolao.encerrado) return [];
+
+    await supabase.from('bolao_exato').update({
+      gols_casa: golsCasa, gols_fora: golsFora, encerrado: true,
+    }).eq('id', bolao.id);
+
+    const { data: palps } = await supabase.from('palpites_exato')
+      .select('*').eq('bolao_id', bolao.id);
+    const cravaram = (palps || []).filter(p => p.palpite_casa === golsCasa && p.palpite_fora === golsFora);
+
+    for (const c of cravaram) {
+      await supabase.from('palpites_exato').update({ cravou: true }).eq('id', c.id);
+    }
+    // atualiza o rei do exato (último que cravou vira destaque)
+    if (cravaram.length) {
+      const rei = cravaram[cravaram.length - 1];
+      await supabase.from('rei_do_exato').upsert({
+        id: 1, nome: rei.nome,
+        jogo: `${bolao.time_casa} x ${bolao.time_fora}`,
+        placar: `${golsCasa}x${golsFora}`,
+        data_craque: new Date().toISOString(),
+      });
+      console.log(`[EXATO] 👑 novo rei do exato: ${rei.nome} cravou ${golsCasa}x${golsFora}`);
+    } else {
+      console.log('[EXATO] ninguém cravou o exato dessa vez.');
+    }
+    return cravaram;
+  } catch (e) { console.error('[EXATO] ❌ apurar:', e.message); return []; }
+}
+
+// Salva uma odd GREEN (fixa até o dia seguinte)
+async function salvarGreen(descricao, odd, jogo) {
+  if (!supabase) return;
+  try {
+    const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
+    const { error } = await supabase.from('odds_green').insert({
+      descricao, odd, jogo,
+      fixado_ate: amanha.toISOString().split('T')[0],
+    });
+    if (error) console.error('[GREEN] ❌', error.message);
+    else console.log(`[GREEN] ✅ green salvo: ${descricao} @ ${odd}`);
+  } catch (e) { console.error('[GREEN] ❌ exceção:', e.message); }
+}
+
+module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, salvarGreen };
