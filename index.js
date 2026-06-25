@@ -16,6 +16,7 @@ const dica = require('./dicadodia');
 const fontes = require('./fontes');
 const armaz = require('./armazenamento');
 const servidor = require('./servidor');
+const sync = require('./supabase-sync');
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -187,8 +188,11 @@ async function checarAoVivo() {
     servidor.setEstado('jogosHoje', jogos);
     servidor.setEstado('aoVivo', jogos.filter(j => j.golsCasa !== null && j.status !== 'FINISHED'));
     try {
-      servidor.setEstado('ranking', db.ranking().slice(0, 20));
+      const rk = db.ranking().slice(0, 50);
+      servidor.setEstado('ranking', rk.slice(0, 20));
       if (nv && nv.rankingXp) servidor.setEstado('rankingXP', nv.rankingXp().slice(0, 20));
+      sync.syncRanking(rk);       // → Supabase (loga)
+      sync.syncJogos(jogos);      // → Supabase (loga)
     } catch (e) {}
     if (jogos.length) {
       console.log(`[MONITOR] ${jogos.length} jogo(s) hoje:`,
@@ -653,6 +657,7 @@ client.on('interactionCreate', async interaction => {
       const jogo = jogos.find(j => String(j.id) === jogoId);
       if (!jogo) return interaction.editReply('❌ Jogo não encontrado. Use **/jogos** pra ver os disponíveis.');
       const res = db.registrar(interaction.user.id, interaction.user.username, String(jogo.id), gc, gf);
+      sync.syncPalpite(interaction.user.id, interaction.user.username, jogo.id, gc, gf); // → Supabase (loga)
       if (res === 'fechado' || res === 'encerrado')
         return interaction.editReply(`🔒 Palpites já fechados para **${jogo.casa} x ${jogo.fora}**!`);
       const embed = new EmbedBuilder().setColor(COR_LIME).setTitle('🎯 Palpite registrado!')
@@ -689,6 +694,7 @@ client.once('clientReady', async () => {
   dica.setRefs(EmbedBuilder, AVISO_APOSTA);
   diagnosticoCanais();
   servidor.iniciarServidor(process.env.PORT || 3000);
+  sync.init(); // conecta o Supabase estruturado (loga status)
   await registrarComandos();
   checarAoVivo(); // inicia o monitor inteligente
   wa.iniciarWhatsApp().catch(e => console.error('WPP init:', e.message)); // inicia o WhatsApp
