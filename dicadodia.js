@@ -222,12 +222,11 @@ function multiplaDosSonhos(jogos, mercadosCraques) {
 }
 
 // Monta 3 múltiplas prontas: Segura, Equilibrada e Dos Sonhos
-async function montarMultiplasProntas(jogos, estatisticas) {
+async function montarMultiplasProntas(jogos, estat) {
   const ordenados = jogos
     .map(j => ({ ...j, score: relevanciaJogo(j) }))
     .filter(j => j.melhor.casa.odd > 0 || j.melhor.fora.odd > 0)
     .sort((a,b) => b.score - a.score);
-
   if (!ordenados.length) return [];
 
   function favorito(j) {
@@ -236,67 +235,79 @@ async function montarMultiplasProntas(jogos, estatisticas) {
       : { time: j.fora, odd: j.melhor.fora.odd, book: j.melhor.fora.book, jogo: `${j.casa} x ${j.fora}` };
   }
 
-  function montar(titulo, cor, candidatos, alvoMin, alvoMax, extras) {
-    const pernas = [];
-    let comb = 1;
-    for (const c of candidatos) {
-      if (comb >= alvoMax) break;
-      pernas.push({ txt: `${c.time} vence (${c.jogo})`, odd: c.odd, book: c.book });
-      comb *= c.odd;
-      if (comb >= alvoMin && pernas.length >= 2) break;
-    }
-    for (const e of (extras || [])) { pernas.push(e); comb *= e.odd; }
-    if (pernas.length < 2) return null;
-    const prob = pernas.reduce((a,p)=>a*(p.odd>0?1/p.odd:0),1);
-    const linhas = pernas.map(p => {
-      const tag = p.tipo === 'REAL' ? ' 📊' : (p.tipo === 'ESTIMATIVA' ? ' ~' : '');
-      const just = p.justificativa ? ` _(${p.justificativa})_` : '';
-      return `• ${p.txt}${tag} — odd ${p.odd.toFixed(2)}${p.book?` (${p.book})`:''}${just}`;
-    }).join('\n');
+  function formatarPerna(p) {
+    const tag = p.tipo === 'REAL' ? ' 📊' : (p.tipo === 'EST' ? ' ~' : '');
+    const just = p.just ? ` _(${p.just})_` : '';
+    return `• **[${p.jogo || ''}]** ${p.txt}${tag} — odd **${Number(p.odd).toFixed(2)}**${p.book ? ` (${p.book})` : ''}${just}`;
+  }
+
+  function montar(titulo, cor, pernas) {
+    if (!pernas || pernas.length < 2) return null;
+    const comb = pernas.reduce((a,p) => a * Number(p.odd), 1);
+    const prob = pernas.reduce((a,p) => a * (1/Number(p.odd)), 1);
     return new EmbedBuilderRef()
       .setColor(cor)
       .setTitle(titulo)
-      .setDescription(linhas)
+      .setDescription(pernas.map(formatarPerna).join('\n'))
       .addFields(
         { name: 'Odd combinada', value: `${comb.toFixed(2)}x`, inline: true },
-        { name: 'Chance real', value: `${(prob*100).toFixed(1)}% (1 em ${Math.round(1/prob)})`, inline: true },
+        { name: 'Prob. implícita', value: `${(prob*100).toFixed(1)}%`, inline: true },
       )
-      .setFooter({ text: '📊 = baseado em estatística real | ~ = estimativa. ' + AVISO_REF });
+      .setFooter({ text: '📊 = dado real | ~ = estimativa | 🔞 +18 | Jogue com responsabilidade. ' + AVISO_REF });
   }
 
-  const favs = ordenados.map(favorito).filter(f => f.odd >= 1.3 && f.odd <= 2.5);
+  // ── SEGURA: favoritos ──
+  const favs = ordenados.map(favorito).filter(f => f.odd >= 1.3 && f.odd <= 2.2);
+  const segura = montar('🟢 Múltipla Segura — Favoritos', 0x1D9E75,
+    favs.slice(0,3).map(f => ({ jogo: f.jogo, txt: `${f.time} vence`, odd: f.odd, book: f.book }))
+  );
 
-  const embeds = [];
-  const segura = montar('🟢 Múltipla Segura', 0x1D9E75, favs, 2.5, 4);
-  if (segura) embeds.push(segura);
-  const equil = montar('🟡 Múltipla Equilibrada', 0xEF9F27, favs, 6, 12);
-  if (equil) embeds.push(equil);
-
-  // DOS SONHOS: análise estatística REAL dos 3 jogos em destaque
-  let mercadosCraque = [];
-  if (estatisticas && estatisticas.mercadosAnalisados) {
-    const destaques = ordenados.slice(0, 3);
-    for (const j of destaques) {
+  // ── EQUILIBRADA: favoritos + ambas marcam ──
+  const pEquil = [];
+  for (const j of ordenados.slice(0, 2)) {
+    const fav = favorito(j);
+    pEquil.push({ jogo: fav.jogo, txt: `${fav.time} vence`, odd: fav.odd, book: fav.book });
+    if (estat) {
       try {
-        const m = await estatisticas.mercadosAnalisados(j.casa, j.fora);
-        // pega o melhor mercado analisado de cada jogo (máx 1 por jogo p/ economizar)
-        if (m && m.length) {
-          mercadosCraque.push({ txt: `${m[0].mercado} (${j.casa} x ${j.fora})`, odd: m[0].odd, book: 'análise', tipo: m[0].tipo, justificativa: m[0].justificativa });
-        }
-      } catch (e) { console.log('[ANALISE]', e.message); }
+        const [sc, sf] = await Promise.all([estat.statsTime(j.casa), estat.statsTime(j.fora)]);
+        const mg = (sc?.golsMarcadosMedia || 1.2) + (sf?.golsMarcadosMedia || 1.0);
+        const oddAm = parseFloat(Math.max(1.6, Math.min(2.4, 1/(Math.min(0.75, mg/4)))).toFixed(2));
+        pEquil.push({ jogo: `${j.casa} x ${j.fora}`, txt: 'Ambas marcam (Sim)', odd: oddAm, book: 'análise', tipo: 'REAL', just: `média ~${mg.toFixed(1)} gols` });
+      } catch {}
     }
+    if (pEquil.length >= 4) break;
   }
-  // se a análise não trouxe nada, cai pros estimados (marcados como tal)
-  if (!mercadosCraque.length) {
-    mercadosCraque = [
-      { txt: '+9.5 escanteios no jogo do favorito', odd: 2.4, book: 'estimado', tipo: 'ESTIMATIVA' },
-      { txt: 'Gol de artilheiro', odd: 2.2, book: 'estimado', tipo: 'ESTIMATIVA' },
-    ];
-  }
-  const sonhos = montar('🌟 Múltipla DOS SONHOS', 0xFF2E63, favs, 4, 6, mercadosCraque);
-  if (sonhos) embeds.push(sonhos);
+  const equil = montar('🟡 Múltipla Equilibrada', 0xEF9F27, pEquil.slice(0,4));
 
-  return embeds;
+  // ── DOS SONHOS: mercados avançados com dados reais ──
+  const pSonho = [];
+  for (const j of ordenados.slice(0, 3)) {
+    if (pSonho.length >= 5) break;
+    const jogoLabel = `${j.casa} x ${j.fora}`;
+    let sc = null, sf = null;
+    if (estat) {
+      try { [sc, sf] = await Promise.all([estat.statsTime(j.casa), estat.statsTime(j.fora)]); } catch {}
+    }
+    // Artilheiro
+    const artC = sc?.artilheiro, artF = sf?.artilheiro;
+    const art = (artC?.gols||0) >= (artF?.gols||0) ? artC : artF;
+    if (art?.nome) pSonho.push({ jogo: jogoLabel, txt: `Gol de ${art.nome}`, odd: 2.80, book: 'análise', tipo: 'REAL', just: `${art.gols||'?'} gols na temp.` });
+    // Escanteios
+    const eC = sc?.escanteiosMedia, eF = sf?.escanteiosMedia;
+    if (eC && eF) {
+      const soma = eC + eF;
+      const linha = (Math.floor(soma) - 0.5).toFixed(1);
+      pSonho.push({ jogo: jogoLabel, txt: `+${linha} escanteios`, odd: 1.85, book: 'análise', tipo: 'REAL', just: `média ~${soma.toFixed(1)}/jogo` });
+    }
+    // +2.5 gols
+    const mgC = sc?.golsMarcadosMedia||1.2, mgF = sf?.golsMarcadosMedia||1.0;
+    if (mgC + mgF >= 2.3) pSonho.push({ jogo: jogoLabel, txt: '+2.5 gols', odd: 1.95, book: 'análise', tipo: 'REAL', just: `~${(mgC+mgF).toFixed(1)} gols esperados` });
+    // Chute ao gol do artilheiro
+    if (art?.nome) pSonho.push({ jogo: jogoLabel, txt: `${art.nome} chuta ao gol (2+)`, odd: 2.20, book: 'estimado', tipo: 'EST', just: 'posição/participação' });
+  }
+  const sonhos = montar('🌟 Múltipla DOS SONHOS — Mercados Avançados', 0xFF2E63, pSonho.slice(0,5));
+
+  return [segura, equil, sonhos].filter(Boolean);
 }
 
 module.exports = { buscarOddsDoDia, dicasDoDia, multiplaDosSonhos, relevanciaJogo, montarMultiplasProntas, setRefs };
