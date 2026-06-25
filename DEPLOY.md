@@ -1,77 +1,60 @@
-# 🚀 Como colocar o bot no ar (Railway — grátis)
+# 🚀 Deploy do Bot Hub Lab C.O — Versão Final
 
-Siga essa ordem. Leva uns 20 minutos na primeira vez.
+Você já fez os passos 1 a 5. Agora só faltam os ajustes finais pra ficar 100%.
 
----
-
-## PASSO 1 — Criar o bot no Discord Developer Portal
-
-1. Acesse: https://discord.com/developers/applications
-2. Clique em **New Application** → nome: `Hub Lab CO Bot` → Create.
-3. No menu lateral, clique em **Bot**.
-4. Clique em **Reset Token** → copie e guarde esse token (é o DISCORD_TOKEN).
-5. Na mesma tela, ative as 3 opções:
-   - ✅ Presence Intent
-   - ✅ Server Members Intent
-   - ✅ Message Content Intent
-6. No menu lateral, clique em **OAuth2 → URL Generator**.
-7. Em Scopes, marque: `bot` e `applications.commands`.
-8. Em Bot Permissions, marque: `Send Messages`, `Embed Links`, `Read Message History`, `View Channels`.
-9. Copie a URL gerada lá embaixo e abra no navegador → escolha o servidor Hub Lab C.O → Autorizar.
+## ⚡ O QUE MUDOU (corrigido nesta versão)
+1. Erro do `dotenv` resolvido (agora é opcional).
+2. Palpites/ranking NÃO se perdem mais ao reiniciar (volume persistente).
+3. Comandos slash ficam instantâneos no seu servidor (variável GUILD_ID).
+4. Permissão do /resultado por Admin (mais confiável).
+5. Bot não trava se a API falhar.
 
 ---
 
-## PASSO 2 — Pegar a chave da API de futebol
+## PASSO A — Atualizar os arquivos no GitHub
+Substitua no seu repositório os arquivos pelos novos desta pasta:
+- index.js
+- api.js
+- palpites.js
+- package.json
 
-1. Acesse: https://www.football-data.org/client/register
-2. Cadastre com seu e-mail (grátis, sem cartão).
-3. Após o cadastro, acesse https://www.football-data.org/client/dashboard
-4. Copie sua **API Key** (é o FOOTBALL_API_KEY).
-
----
-
-## PASSO 3 — Pegar os IDs dos canais do Discord
-
-1. No Discord: Configurações (engrenagem) → Avançado → ative **Modo Desenvolvedor**.
-2. Clique com botão direito em cada canal abaixo → **Copiar ID**:
-   - #gols-ao-vivo → CANAL_GOLS
-   - #jogos-do-dia → CANAL_JOGOS
-   - #tabelas-e-classificação → CANAL_TABELA
-   - #palpites → CANAL_PALPITES
-   - #ranking-geral → CANAL_RANKING
+(Edite cada um no GitHub: abre o arquivo → lápis ✏️ → apaga tudo → cola o novo → Commit changes.)
 
 ---
 
-## PASSO 4 — Criar conta e projeto no Railway
+## PASSO B — Adicionar variável GUILD_ID (comandos instantâneos)
+1. Pegue o ID do seu servidor: no Discord, clique com botão direito no NOME do servidor (topo) → Copiar ID do servidor.
+2. No Railway → aba Variables → New Variable:
+   - Nome: `GUILD_ID`
+   - Valor: o ID do servidor
+3. Salve.
 
-1. Acesse: https://railway.app
-2. Faça login com GitHub (crie uma conta no GitHub se não tiver — é grátis).
-3. Clique em **New Project → Deploy from GitHub repo**.
-
----
-
-## PASSO 5 — Subir o código no GitHub
-
-1. Acesse: https://github.com e crie um repositório **privado** chamado `hublab-bot`.
-2. Faça o upload dos arquivos do bot:
-   - index.js
-   - api.js
-   - palpites.js
-   - package.json
-   (NÃO suba o arquivo .env nem as credenciais)
-3. Conecte o repositório ao Railway (ele vai pedir autorização no GitHub).
+(Sem isso o bot funciona, mas os comandos podem levar até 1h pra aparecer. Com isso, aparecem na hora.)
 
 ---
 
-## PASSO 6 — Configurar as variáveis de ambiente no Railway
+## PASSO C — Criar volume persistente (NÃO perder os palpites)
+IMPORTANTE: o Railway apaga arquivos ao reiniciar. O volume resolve isso.
 
-1. No projeto do Railway, clique na aba **Variables**.
-2. Clique em **New Variable** e adicione uma por uma:
+1. No Railway, dentro do seu serviço Bot-futebol, procure a opção de criar **Volume**
+   (clique com botão direito no serviço → "Attach Volume", ou aba Settings → Volumes → New Volume).
+2. No campo "Mount path", digite exatamente:
+   ```
+   /data
+   ```
+3. Salve. O Railway cria o volume e define automaticamente a variável RAILWAY_VOLUME_MOUNT_PATH.
+   O bot já está programado pra usar esse caminho.
+
+---
+
+## PASSO D — Confirmar variáveis
+Confira que estão todas na aba Variables do Railway:
 
 | Nome | Valor |
 |---|---|
-| DISCORD_TOKEN | o token do passo 1 |
-| FOOTBALL_API_KEY | a chave do passo 2 |
+| DISCORD_TOKEN | token do Discord |
+| FOOTBALL_API_KEY | chave do football-data.org |
+| GUILD_ID | ID do servidor (novo) |
 | CANAL_GOLS | ID do #gols-ao-vivo |
 | CANAL_JOGOS | ID do #jogos-do-dia |
 | CANAL_TABELA | ID do #tabelas-e-classificação |
@@ -80,45 +63,26 @@ Siga essa ordem. Leva uns 20 minutos na primeira vez.
 
 ---
 
-## PASSO 7 — Deploy
-
-1. O Railway faz o deploy automaticamente quando você conecta o repositório.
-2. Clique em **Deploy** se não iniciou sozinho.
-3. Acompanhe os logs — deve aparecer:
+## PASSO E — Deploy e teste
+1. O Railway faz deploy sozinho ao salvar. Se não, clique em Deploy.
+2. Veja os logs. Deve aparecer:
    ```
-   ✅ Hub Lab C.O Bot online! Logado como Hub Lab CO Bot#1234
-   Comandos registrados!
+   ✅ Hub Lab C.O Bot online! Logado como Bot-futebol#1234
+   Comandos registrados no servidor (instantâneo)!
    ```
+3. No Discord, teste:
+   - `/jogos`
+   - `/tabela`
+   - `/artilheiros`
+   - `/palpite time_casa:Brasil gols_casa:2 gols_fora:1 time_fora:Haiti`
+   - `/ranking`
 
 ---
 
-## PASSO 8 — Testar
+## Se der erro
+- `Cannot find module X` → faltou atualizar o package.json no GitHub.
+- `DISCORD_TOKEN não configurado` → falta a variável ou está com espaço/erro de digitação.
+- Comandos não aparecem → confira o GUILD_ID; espere 1 min após o deploy.
+- Bot online mas não posta nos canais → confira os IDs dos canais e se o cargo do bot está acima dos canais na hierarquia.
 
-No Discord, vá em qualquer canal e digite:
-- `/jogos` → mostra os jogos de hoje
-- `/tabela` → classificação da Copa
-- `/artilheiros` → top goleadores
-- `/palpite time_casa:Brasil gols_casa:2 gols_fora:1 time_fora:Argentina`
-- `/ranking` → placar de palpites
-
----
-
-## Custo
-
-- Railway: **grátis** (plano Hobby tem $5 de crédito grátis por mês — suficiente pra um bot leve)
-- football-data.org: **grátis** (plano gratuito cobre Copa do Mundo)
-- Discord Developer: **grátis**
-
-Total: R$0 pra começar.
-
----
-
-## Dúvidas frequentes
-
-**O bot não responde aos comandos:** espere 1-2 minutos após o deploy para os comandos slash aparecerem no Discord.
-
-**Erro "Missing Permissions":** verifique se o cargo do bot no servidor está acima dos canais que ele precisa escrever.
-
-**Palpites não fecham automaticamente:** a detecção é por polling (a cada 30s). Se a API demorar pra marcar o jogo como IN_PLAY, pode haver um pequeno atraso — isso é normal no plano grátis.
-
-**O Railway parou o bot:** o plano grátis tem limite mensal. Se esgotar, faça upgrade ou migre pra Oracle Cloud Always Free (uma VPS grátis para sempre — eu te guio nisso se precisar).
+Manda print do log que eu identifico na hora.
