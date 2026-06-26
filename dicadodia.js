@@ -104,7 +104,12 @@ async function buscarOddsDoDia() {
   } catch (e) { console.error('[ODDS]', e.message); return []; }
 }
 
-// Extrai a melhor odd (1/X/2) entre todas as casas pra um jogo
+// Casas de apostas presentes no Brasil (slugs da API)
+const CASAS_BR = ['bet365','betano','sportingbet','superbet','kto','h2bet','betfair',
+  'pinnacle','1xbet','bwin','betsson','parimatch','bodog','888sport','unibet',
+  'novibet','betway','leon','melbet','mostbet','dafabet','22bet'];
+
+// Extrai a melhor odd (1/X/2) priorizando casas brasileiras
 function extrairMelhorOdd(fixture, oddsData) {
   try {
     const casa = fixture.participant1Name || oddsData.participant1Name || 'Casa';
@@ -113,18 +118,20 @@ function extrairMelhorOdd(fixture, oddsData) {
     const books = oddsData.bookmakerOdds || {};
 
     for (const [bookSlug, bookData] of Object.entries(books)) {
+      // prioriza casas brasileiras — se não for BR, só usa se não tiver nenhuma BR ainda
+      const ehBR = CASAS_BR.some(b => bookSlug.toLowerCase().includes(b));
       const markets = (bookData && bookData.markets) || {};
-      const m101 = markets['101']; // 101 = Full Time Result (1X2)
+      const m101 = markets['101'];
       if (!m101 || !m101.outcomes) continue;
       const oc = m101.outcomes;
-      // outcome 101=home, 102=draw, 103=away
-      const preco = (id) => {
-        try { return oc[id].players['0'].price || 0; } catch { return 0; }
-      };
+      const preco = (id) => { try { return oc[id].players['0'].price || 0; } catch { return 0; } };
       const ph = preco('101'), pd = preco('102'), pa = preco('103');
-      if (ph > melhor.casa.odd) melhor.casa = { odd: ph, book: bookSlug };
+      // se for casa BR, substitui sempre; se não for BR, só substitui se a atual não é BR
+      const podeSubstCasa = ehBR || !CASAS_BR.some(b => melhor.casa.book.toLowerCase().includes(b));
+      const podeSubstFora = ehBR || !CASAS_BR.some(b => melhor.fora.book.toLowerCase().includes(b));
+      if (ph > melhor.casa.odd && podeSubstCasa) melhor.casa = { odd: ph, book: bookSlug };
       if (pd > melhor.empate.odd) melhor.empate = { odd: pd, book: bookSlug };
-      if (pa > melhor.fora.odd) melhor.fora = { odd: pa, book: bookSlug };
+      if (pa > melhor.fora.odd && podeSubstFora) melhor.fora = { odd: pa, book: bookSlug };
     }
     if (!melhor.casa.odd && !melhor.fora.odd) return null;
     return { casa, fora, melhor };
