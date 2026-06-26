@@ -160,7 +160,21 @@ async function salvarGreen(descricao, odd, jogo) {
   } catch (e) { console.error('[GREEN] ❌ exceção:', e.message); }
 }
 
-module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, salvarGreen, salvarOddsDoDia, marcarGreen };
+
+// Salva/atualiza o status da live (controlado por /live no Discord)
+async function setLiveStatus({ ativa, plataforma, canal }) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from('live_status').upsert({
+      id: 1, ativa, plataforma, canal,
+      atualizado_em: new Date().toISOString(),
+    });
+    if (error) console.error('[SYNC] ❌ live_status:', error.message);
+    else console.log(`[SYNC] ✅ live status: ${ativa ? 'AO VIVO' : 'offline'} (${plataforma}: ${canal})`);
+  } catch (e) { console.error('[SYNC] ❌ live exceção:', e.message); }
+}
+
+module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, salvarGreen, salvarOddsDoDia, marcarGreen, setLiveStatus };
 
 // Salva as odds do dia no Supabase (ficam ativas até meia-noite)
 async function salvarOddsDoDia(odds) {

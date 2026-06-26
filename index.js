@@ -18,6 +18,7 @@ const armaz = require('./armazenamento');
 const servidor = require('./servidor');
 const sync = require('./supabase-sync');
 const estat = require('./estatisticas');
+const roteiro = require('./roteiro');
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -221,10 +222,24 @@ setInterval(async () => {
   const jaFez = (nome) => tarefasFeitas[marca(nome)];
   const marcar = (nome) => { tarefasFeitas[marca(nome)] = true; };
 
+  // 09:00 → roteiro de vídeo de análise pros fundadores
+  if (h === 6 && m === 0 && !jaFez('roteiro06')) {
+    marcar('roteiro06');
+    console.log('[AGENDA] 6h — gerando roteiro de análise');
+    try {
+      const jogos = await dica.buscarOddsDoDia();
+      const lista = jogos.length ? jogos : await api.jogosDoDia();
+      if (lista.length) {
+        const texto = await roteiro.gerarRoteiro(lista, estat, dica);
+        const chF = canal(CH.fundadores);
+        if (chF) { for (let i = 0; i < texto.length; i += 1900) await chF.send(texto.slice(i, i + 1900)); }
+      }
+    } catch (e) { console.error('[ROTEIRO]', e.message); }
+  }
   // 11:00 → agenda do dia (TODOS os jogos, mesmo TIMED) + odds
-  if (h === 11 && m === 0 && !jaFez('agenda11')) {
-    marcar('agenda11');
-    console.log('[AGENDA] 11h — disparando agenda do dia');
+  if (h === 7 && m === 0 && !jaFez('agenda07')) {
+    marcar('agenda07');
+    console.log('[AGENDA] 7h — disparando agenda do dia');
     await agendaDoDia();
     await entregaOdds('Odds do dia — Copa do Mundo ⚽');
   }
@@ -233,7 +248,33 @@ setInterval(async () => {
     marcar('odds20');
     await entregaOdds('Odds pra amanhã — prepare os palpites! ⚽');
   }
+  // 23:00 → recap do dia
+  if (h === 23 && m === 0 && !jaFez('recap23')) {
+    marcar('recap23');
+    console.log('[AGENDA] 23h — recap do dia');
+    try { await recapDoDia(); } catch (e) { console.error('[RECAP]', e.message); }
+  }
 }, 60 * 1000); // checa a cada minuto
+
+// Recap diário: resumo do dia no canal de ranking
+async function recapDoDia() {
+  const jogosHoje = await api.jogosDoDia();
+  const todosPalpites = db.todosOsPalpitesDoDia(jogosHoje);
+  const rk = db.ranking();
+  if (!todosPalpites.length && !rk.length) return;
+  const exatosHoje = todosPalpites.filter(p => p.acertouExato);
+  let msg = `🌙 **RECAP DO DIA — ${new Date().toLocaleDateString('pt-BR')}**\n\n`;
+  msg += `📊 **${todosPalpites.length}** palpites foram feitos hoje!\n`;
+  if (exatosHoje.length) {
+    msg += `🎯 **Cravaram o exato:** ${exatosHoje.map(p => p.nome).join(', ')}\n`;
+  }
+  msg += `\n🏆 **Top 3 do ranking:**\n`;
+  rk.slice(0, 3).forEach((r, i) => { msg += `${['🥇','🥈','🥉'][i]} ${r.nome} — ${r.pts}pts\n`; });
+  msg += `\n🌐 Palpite amanhã: ${LINK_SITE}/dashboard.html`;
+  const chR = canal(CH.ranking) || canal(CH.palpites);
+  if (chR) chR.send(msg).catch(() => {});
+  wa.enviar(msg.replace(/\*\*/g, '*'));
+}
 
 
 // Monitor com frequência adaptável:
@@ -322,11 +363,13 @@ async function checarAoVivo() {
             if (ev && ev.autorGol) autor = `\n🎯 Gol de **${ev.autorGol}**`;
           } catch {}
           if (chGols) chGols.send({ embeds: [embedGol({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora, minuto: '—', autor })] }).catch(() => {});
-          wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}${autor ? `\n${autor.replace(/\*/g,'')}` : ''}\n\n🌐 ${LINK_SITE}\n📱 ${LINK_DISCORD}`);
+          // GOL no WhatsApp DESATIVADO (evita flood no grupo). Reativar: descomente a linha abaixo.
+          // wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}${autor ? `\n${autor.replace(/\*/g,'')}` : ''}\n\n🌐 ${LINK_SITE}\n📱 ${LINK_DISCORD}`);
         } else if (totalAtual < totalAnt) {
           // GOL ANULADO — o placar diminuiu
           if (chGols) chGols.send(`❌ **Gol anulado!** ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}`).catch(() => {});
-          wa.enviar(`❌ *Gol anulado!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}`);
+          // Gol anulado no WhatsApp DESATIVADO (evita flood). Reativar: descomente abaixo.
+          // wa.enviar(`❌ *Gol anulado!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}`);
         }
       }
 
@@ -344,6 +387,16 @@ async function checarAoVivo() {
         // grava o ranking atualizado no Supabase (loga)
         sync.syncRanking(db.ranking().slice(0, 50));
         console.log(`[PONTUACAO] jogo ${key} pontuado: ${Object.keys(resultados).length} palpite(s)`);
+        // DM pra cada palpitador com o resultado dele
+        for (const [userId, res] of Object.entries(resultados)) {
+          client.users.fetch(userId).then(u => {
+            let msg;
+            if (res.acertouExato) msg = `🎯 **CRAVOU O EXATO!** Você acertou ${jogo.casa} ${jogo.golsCasa}x${jogo.golsFora} ${jogo.fora} e ganhou **10 pontos**! Você tá voando! 🚀`;
+            else if (res.acertouResultado) msg = `✅ **Acertou o resultado!** ${jogo.casa} ${jogo.golsCasa}x${jogo.golsFora} ${jogo.fora}. Você ganhou **3 pontos**!`;
+            else msg = `⚽ ${jogo.casa} ${jogo.golsCasa}x${jogo.golsFora} ${jogo.fora} acabou. Dessa vez não foi (você palpitou ${res.palpiteCasa}x${res.palpiteFora}), mas +1 ponto por participar! Bora pra próxima. 💪`;
+            u.send(`${msg}\n\n🌐 Veja seu ranking: ${LINK_SITE}/dashboard.html`).catch(() => {});
+          }).catch(() => {});
+        }
         // apura o bolão exato (se este era o jogo do dia)
         sync.apurarBolaoExato(String(jogo.id), jogo.golsCasa, jogo.golsFora).then(cravaram => {
           if (cravaram && cravaram.length && chGols) {
@@ -513,6 +566,17 @@ client.on('messageReactionAdd', async (reaction, user) => {
 const conviteCache = new Map();
 client.on('guildMemberAdd', async member => {
   try {
+    // DM de boas-vindas com link do site
+    if (!member.user.bot) {
+      member.send(
+        `👋 Bem-vindo(a) ao **Hub Lab C.O**, ${member.user.username}!\n\n` +
+        `Aqui a gente vive futebol: palpites, bolão, odds e muita resenha. 🎯\n\n` +
+        `🌐 **Faça seu primeiro palpite:** ${LINK_SITE}/dashboard.html\n` +
+        `🏆 Acerte placares, suba no ranking e vire o **Rei do Exato**!\n\n` +
+        `Qualquer dúvida, é só chamar a galera nos canais. Bora pra cima! ⚽`
+      ).catch(() => {}); // se a DM estiver fechada, ignora
+    }
+
     const novosConvites = await member.guild.invites.fetch().catch(() => null);
     if (!novosConvites) return;
     const antigos = conviteCache.get(member.guild.id) || new Map();
@@ -635,6 +699,13 @@ const comandos = [
   new SlashCommandBuilder().setName('exato').setDescription('Palpite no Bolão Exato do dia (crave o placar!)')
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols do time da casa').setRequired(true).setMinValue(0).setMaxValue(20))
     .addIntegerOption(o => o.setName('gols_fora').setDescription('Gols do time de fora').setRequired(true).setMinValue(0).setMaxValue(20)),
+  new SlashCommandBuilder().setName('roteiro').setDescription('(Staff) Gera roteiro de vídeo de análise do dia'),
+  new SlashCommandBuilder().setName('historico').setDescription('Veja seu histórico de desempenho')
+    .addUserOption(o => o.setName('usuario').setDescription('Ver de outra pessoa (opcional)').setRequired(false)),
+  new SlashCommandBuilder().setName('live').setDescription('(Staff) Ativa ou desativa live no site')
+    .addStringOption(o => o.setName('acao').setDescription('on ou off').setRequired(true).addChoices({ name: '🔴 Ativar live', value: 'on' }, { name: '⚫ Desativar live', value: 'off' }))
+    .addStringOption(o => o.setName('plataforma').setDescription('kick ou tiktok').setRequired(true).addChoices({ name: 'Kick', value: 'kick' }, { name: 'TikTok', value: 'tiktok' }))
+    .addStringOption(o => o.setName('canal').setDescription('Canal (ex: nathanbragalive)').setRequired(false)),
   new SlashCommandBuilder().setName('green').setDescription('(Staff) Marca uma odd que deu GREEN (fixa no site)')
     .addStringOption(o => o.setName('descricao').setDescription('Ex: Brasil vence + 2.5 gols').setRequired(true))
     .addNumberOption(o => o.setName('odd').setDescription('A odd que pagou').setRequired(true))
@@ -732,6 +803,71 @@ client.on('interactionCreate', async interaction => {
       const embeds = await dica.montarMultiplasProntas(jogos, estat);
       if (!embeds.length) { await interaction.editReply('Não consegui montar múltiplas agora.'); return; }
       await interaction.editReply({ embeds });
+    } else if (commandName === 'roteiro') {
+      const membroR = await interaction.guild.members.fetch(interaction.user.id);
+      const ehStaffR = membroR.permissions.has(PermissionsBitField.Flags.Administrator)
+        || membroR.roles.cache.some(r => /fundador|moderador/i.test(r.name));
+      if (!ehStaffR) return interaction.editReply('❌ Só a staff gera roteiros.');
+      const jogos = await dica.buscarOddsDoDia();
+      const texto = await roteiro.gerarRoteiro(jogos.length ? jogos : await api.jogosDoDia(), estat, dica);
+      // envia no canal fundadores se configurado, senão responde
+      const chF = canal(CH.fundadores);
+      if (chF) {
+        // quebra em pedaços de 1900 chars (limite Discord)
+        for (let i = 0; i < texto.length; i += 1900) {
+          await chF.send(texto.slice(i, i + 1900));
+        }
+        await interaction.editReply('✅ Roteiro gerado no canal fundadores! Bom vídeo! 🎬');
+      } else {
+        await interaction.editReply(texto.slice(0, 1900));
+      }
+
+    } else if (commandName === 'historico') {
+      const alvo = interaction.options.getUser('usuario') || interaction.user;
+      const hist = db.meusPalpites(alvo.id);
+      if (!hist.length) return interaction.editReply(`${alvo.username} ainda não tem histórico de palpites.`);
+      const total = hist.length;
+      const encerrados = hist.filter(p => p.encerrado);
+      const exatos = encerrados.filter(p => p.acertouExato).length;
+      const resultados = encerrados.filter(p => p.acertouResultado && !p.acertouExato).length;
+      const erros = encerrados.length - exatos - resultados;
+      const taxaAcerto = encerrados.length ? Math.round(((exatos + resultados) / encerrados.length) * 100) : 0;
+      const pontosTotais = encerrados.reduce((s, p) => s + (p.pts || 0), 0);
+      const embed = new EmbedBuilder().setColor(COR_LIME)
+        .setTitle(`📊 Histórico de ${alvo.username}`)
+        .setThumbnail(alvo.displayAvatarURL())
+        .addFields(
+          { name: '🎯 Palpites totais', value: `${total}`, inline: true },
+          { name: '✅ Taxa de acerto', value: `${taxaAcerto}%`, inline: true },
+          { name: '⭐ Pontos ganhos', value: `${pontosTotais}`, inline: true },
+          { name: '🎯 Placares exatos', value: `${exatos}`, inline: true },
+          { name: '✅ Resultados certos', value: `${resultados}`, inline: true },
+          { name: '❌ Erros', value: `${erros}`, inline: true },
+        )
+        .setFooter({ text: 'Continue palpitando pra subir no ranking! • hublab.agency' });
+      await interaction.editReply({ embeds: [embed] });
+
+    } else if (commandName === 'live') {
+      const membroL = await interaction.guild.members.fetch(interaction.user.id);
+      const ehStaffL = membroL.permissions.has(PermissionsBitField.Flags.Administrator)
+        || membroL.roles.cache.some(r => /fundador|moderador/i.test(r.name));
+      if (!ehStaffL) return interaction.editReply('❌ Só a staff pode controlar as lives.');
+      const acao = interaction.options.getString('acao');
+      const plat = interaction.options.getString('plataforma');
+      const canalLive = interaction.options.getString('canal') || (plat === 'kick' ? 'nathanbragalive' : 'nathanfuteboll');
+      // salva estado da live no Supabase
+      await sync.setLiveStatus({ ativa: acao === 'on', plataforma: plat, canal: canalLive });
+      // avisa no canal e WhatsApp se ativou
+      if (acao === 'on') {
+        const url = plat === 'kick' ? `https://kick.com/${canalLive}` : `https://www.tiktok.com/@${canalLive}`;
+        const msg = `🔴 *LIVE AGORA!* Nathan e Detto estão ao vivo na ${plat === 'kick' ? 'Kick' : 'TikTok'}!\n\n📺 ${url}\n🌐 ${LINK_SITE}/live.html\n📱 Discord: ${LINK_DISCORD}`;
+        wa.enviar(msg);
+        const chGols = canal(CH.gols);
+        if (chGols) chGols.send(`🔴 **LIVE AGORA!** Estamos ao vivo na ${plat === 'kick' ? 'Kick' : 'TikTok'}!\n📺 ${url}\n🌐 ${LINK_SITE}/live.html`).catch(() => {});
+      }
+      servidor.setEstado('liveStatus', { ativa: acao === 'on', plataforma: plat, canal: canalLive });
+      await interaction.editReply(`✅ Live ${acao === 'on' ? '🔴 ATIVADA' : '⚫ desativada'} no site! (${plat}: ${canalLive})`);
+
     } else if (commandName === 'green') {
       const membroG = await interaction.guild.members.fetch(interaction.user.id);
       const ehStaffG = membroG.permissions.has(PermissionsBitField.Flags.Administrator)

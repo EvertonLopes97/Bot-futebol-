@@ -105,11 +105,19 @@ async function buscarOddsDoDia() {
 }
 
 // Casas de apostas presentes no Brasil (slugs da API)
-const CASAS_BR = ['bet365','betano','sportingbet','superbet','kto','h2bet','betfair',
-  'pinnacle','1xbet','bwin','betsson','parimatch','bodog','888sport','unibet',
-  'novibet','betway','leon','melbet','mostbet','dafabet','22bet'];
+// Casas de apostas LICENCIADAS no Brasil (apenas estas são usadas)
+const CASAS_BR = ['bet365','betano','sportingbet','superbet','kto','h2bet',
+  'betfair','betnacional','estrelabet','novibet','betway','vaidebet',
+  'brazino','blaze','pixbet','esportesdasorte','betesporte','bet7k',
+  'reidopitaco','f12bet','lottoland','betsson','parimatch','mcgames'];
 
-// Extrai a melhor odd (1/X/2) priorizando casas brasileiras
+// Verifica se um slug de casa é brasileiro (match flexível)
+function ehCasaBR(slug) {
+  const s = (slug || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return CASAS_BR.some(b => s.includes(b.replace(/[^a-z0-9]/g, '')));
+}
+
+// Extrai a melhor odd (1/X/2) APENAS de casas brasileiras
 function extrairMelhorOdd(fixture, oddsData) {
   try {
     const casa = fixture.participant1Name || oddsData.participant1Name || 'Casa';
@@ -118,21 +126,20 @@ function extrairMelhorOdd(fixture, oddsData) {
     const books = oddsData.bookmakerOdds || {};
 
     for (const [bookSlug, bookData] of Object.entries(books)) {
-      // prioriza casas brasileiras — se não for BR, só usa se não tiver nenhuma BR ainda
-      const ehBR = CASAS_BR.some(b => bookSlug.toLowerCase().includes(b));
+      // IGNORA completamente casas que não são brasileiras
+      if (!ehCasaBR(bookSlug)) continue;
       const markets = (bookData && bookData.markets) || {};
       const m101 = markets['101'];
       if (!m101 || !m101.outcomes) continue;
       const oc = m101.outcomes;
       const preco = (id) => { try { return oc[id].players['0'].price || 0; } catch { return 0; } };
       const ph = preco('101'), pd = preco('102'), pa = preco('103');
-      // se for casa BR, substitui sempre; se não for BR, só substitui se a atual não é BR
-      const podeSubstCasa = ehBR || !CASAS_BR.some(b => melhor.casa.book.toLowerCase().includes(b));
-      const podeSubstFora = ehBR || !CASAS_BR.some(b => melhor.fora.book.toLowerCase().includes(b));
-      if (ph > melhor.casa.odd && podeSubstCasa) melhor.casa = { odd: ph, book: bookSlug };
+      // entre casas BR, pega a melhor (maior) odd
+      if (ph > melhor.casa.odd) melhor.casa = { odd: ph, book: bookSlug };
       if (pd > melhor.empate.odd) melhor.empate = { odd: pd, book: bookSlug };
-      if (pa > melhor.fora.odd && podeSubstFora) melhor.fora = { odd: pa, book: bookSlug };
+      if (pa > melhor.fora.odd) melhor.fora = { odd: pa, book: bookSlug };
     }
+    // Se nenhuma casa BR tinha odd pra esse jogo, não retorna (não usa internacional)
     if (!melhor.casa.odd && !melhor.fora.odd) return null;
     return { casa, fora, melhor };
   } catch { return null; }
@@ -286,7 +293,7 @@ async function montarMultiplasProntas(jogos, estat) {
   }
   const equil = montar('🟡 Múltipla Equilibrada', 0xEF9F27, pEquil.slice(0,4));
 
-  // ── DOS SONHOS: mercados avançados com dados reais ──
+  // ── DOS SONHOS: mercados avançados, sempre com jogo identificado ──
   const pSonho = [];
   for (const j of ordenados.slice(0, 3)) {
     if (pSonho.length >= 5) break;
@@ -295,22 +302,39 @@ async function montarMultiplasProntas(jogos, estat) {
     if (estat) {
       try { [sc, sf] = await Promise.all([estat.statsTime(j.casa), estat.statsTime(j.fora)]); } catch {}
     }
-    // Artilheiro
+    const oddCasa = j.melhor?.casa?.odd || 0;
+    const oddFora = j.melhor?.fora?.odd || 0;
+    const fav = (oddCasa && oddCasa <= (oddFora||99)) ? j.casa : j.fora;
+
+    // 1. Artilheiro (dado real do Sofascore, se tiver)
     const artC = sc?.artilheiro, artF = sf?.artilheiro;
     const art = (artC?.gols||0) >= (artF?.gols||0) ? artC : artF;
-    if (art?.nome) pSonho.push({ jogo: jogoLabel, txt: `Gol de ${art.nome}`, odd: 2.80, book: 'análise', tipo: 'REAL', just: `${art.gols||'?'} gols na temp.` });
-    // Escanteios
+    if (art?.nome) {
+      pSonho.push({ jogo: jogoLabel, txt: `Gol de ${art.nome}`, odd: 2.80, book: 'análise', tipo: 'REAL', just: `${art.gols||'?'} gols na temporada` });
+    } else {
+      // sem Sofascore: usa "favorito marca primeiro" (baseado na odd real)
+      pSonho.push({ jogo: jogoLabel, txt: `${fav} marca primeiro`, odd: 1.75, book: 'análise', tipo: 'EST', just: 'favorito pelas odds' });
+    }
+
+    // 2. Escanteios (real se tiver, senão estimativa padrão por jogo)
     const eC = sc?.escanteiosMedia, eF = sf?.escanteiosMedia;
     if (eC && eF) {
       const soma = eC + eF;
       const linha = (Math.floor(soma) - 0.5).toFixed(1);
       pSonho.push({ jogo: jogoLabel, txt: `+${linha} escanteios`, odd: 1.85, book: 'análise', tipo: 'REAL', just: `média ~${soma.toFixed(1)}/jogo` });
+    } else if (pSonho.length < 5) {
+      pSonho.push({ jogo: jogoLabel, txt: `+8.5 escanteios`, odd: 1.90, book: 'estimado', tipo: 'EST', just: 'linha padrão do mercado' });
     }
-    // +2.5 gols
-    const mgC = sc?.golsMarcadosMedia||1.2, mgF = sf?.golsMarcadosMedia||1.0;
-    if (mgC + mgF >= 2.3) pSonho.push({ jogo: jogoLabel, txt: '+2.5 gols', odd: 1.95, book: 'análise', tipo: 'REAL', just: `~${(mgC+mgF).toFixed(1)} gols esperados` });
-    // Chute ao gol do artilheiro
-    if (art?.nome) pSonho.push({ jogo: jogoLabel, txt: `${art.nome} chuta ao gol (2+)`, odd: 2.20, book: 'estimado', tipo: 'EST', just: 'posição/participação' });
+
+    // 3. Gols no jogo (real se tiver, senão pela odd do favorito)
+    const mgC = sc?.golsMarcadosMedia, mgF = sf?.golsMarcadosMedia;
+    if (mgC && mgF) {
+      const total = mgC + mgF;
+      if (total >= 2.3 && pSonho.length < 5) pSonho.push({ jogo: jogoLabel, txt: '+2.5 gols', odd: 1.95, book: 'análise', tipo: 'REAL', just: `~${total.toFixed(1)} gols esperados` });
+      else if (pSonho.length < 5) pSonho.push({ jogo: jogoLabel, txt: 'Menos de 2.5 gols', odd: 1.85, book: 'análise', tipo: 'REAL', just: `~${total.toFixed(1)} gols esperados` });
+    } else if (pSonho.length < 5) {
+      pSonho.push({ jogo: jogoLabel, txt: 'Ambas marcam', odd: 1.95, book: 'estimado', tipo: 'EST', just: 'mercado popular' });
+    }
   }
   const sonhos = montar('🌟 Múltipla DOS SONHOS — Mercados Avançados', 0xFF2E63, pSonho.slice(0,5));
 
