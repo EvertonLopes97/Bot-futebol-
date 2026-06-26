@@ -39,6 +39,7 @@ const CH = {
   fundadores: process.env.CANAL_FUNDADORES, // canal privado dos fundadores
 };
 const CARGO_VIP = process.env.CARGO_VIP || 'VIP';
+const LINK_SITE = process.env.SITE_URL || 'https://hublab.agency';
 const AVISO_APOSTA = '⚠️ +18. Conteúdo recreativo e educativo, não é recomendação de aposta. Apostas envolvem risco de perda. Jogue com responsabilidade. Se precisar de ajuda: 0800 redes de apoio ao jogador.';
 const CANAL_APOSTAS = process.env.CANAL_APOSTAS;
 const LINK_DISCORD = process.env.WPP_LINK_DISCORD || 'https://discord.gg/seuconvite';
@@ -47,6 +48,52 @@ const GUILD_ID = process.env.GUILD_ID; // opcional: deixa comandos instantâneos
 const COR_LIME = 0xC6F432, COR_GOL = 0xFF3D7F, COR_TABELA = 0x378ADD, COR_RANKING = 0xFFD700;
 
 function canal(id) { return id ? client.channels.cache.get(id) : null; }
+
+// ── CARGO AUTOMÁTICO TOP 100 ──
+// Variável de ambiente: CARGO_TOP100 = nome ou ID do cargo
+const CARGO_TOP100_NOME = process.env.CARGO_TOP100 || 'Top 100 Hub Lab';
+
+async function atualizarCargoTop100(discordClient, ranking) {
+  try {
+    const guild = discordClient.guilds.cache.first();
+    if (!guild) return;
+    // pega ou cria o cargo
+    let cargo = guild.roles.cache.find(r => r.name === CARGO_TOP100_NOME);
+    if (!cargo) {
+      cargo = await guild.roles.create({
+        name: CARGO_TOP100_NOME,
+        color: 0xFFCF00, // amarelo Hub Lab
+        hoist: true,     // aparece separado na lista
+        reason: 'Cargo automático Top 100 palpitadores',
+      });
+      console.log(`[TOP100] ✅ Cargo "${CARGO_TOP100_NOME}" criado (ID: ${cargo.id})`);
+    }
+    // IDs que devem ter o cargo (top 100)
+    const idsTop = new Set(ranking.slice(0,100).map(r => String(r.id || r.discord_id)).filter(Boolean));
+    // busca todos os membros com o cargo atual
+    await guild.members.fetch();
+    const comCargo = guild.members.cache.filter(m => m.roles.cache.has(cargo.id));
+    let adicionados = 0, removidos = 0;
+    // remove quem saiu do top 100
+    for (const [, membro] of comCargo) {
+      if (!idsTop.has(membro.id)) {
+        await membro.roles.remove(cargo).catch(() => {});
+        removidos++;
+      }
+    }
+    // adiciona quem entrou no top 100
+    for (const id of idsTop) {
+      const membro = guild.members.cache.get(id);
+      if (membro && !membro.roles.cache.has(cargo.id)) {
+        await membro.roles.add(cargo).catch(() => {});
+        adicionados++;
+      }
+    }
+    if (adicionados || removidos) {
+      console.log(`[TOP100] ✅ Cargo atualizado: +${adicionados} adicionados, -${removidos} removidos`);
+    }
+  } catch (e) { console.error('[TOP100] ❌', e.message); }
+}
 
 // ════════ EMBEDS ════════
 function embedJogosDoDia(jogos) {
@@ -146,7 +193,7 @@ async function agendaDoDia() {
   }
   ch.send({ embeds: [embedJogosDoDia(jogos)] }).catch(e => console.error('Envio agenda:', e.message));
   const lista = jogos.map(j => `• ${j.casa} x ${j.fora} (${j.hora})`).join('\n');
-  wa.enviar(`⚽ *JOGOS DE HOJE — Copa do Mundo*\n${lista}\n\n👉 Palpita no Discord: ${LINK_DISCORD}`);
+  wa.enviar(`⚽ *JOGOS DE HOJE — Copa do Mundo*\n${lista}\n\n👉 Palpita agora: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
   console.log(`[AGENDA] disparada com ${jogos.length} jogos`);
 
   // ── BOLÃO EXATO DO DIA: escolhe o jogo mais popular ──
@@ -161,7 +208,7 @@ async function agendaDoDia() {
         servidor.setEstado('bolaoExato', bolao);
         const msg = `🎯 **BOLÃO EXATO DO DIA!**\n\n**${escolhido.casa} x ${escolhido.fora}**\n\nCrave o **placar exato** e vire o 👑 Rei do Exato! Use **/exato** pra palpitar.`;
         ch.send(msg).catch(() => {});
-        wa.enviar(`🎯 *BOLÃO EXATO DO DIA!*\n\n${escolhido.casa} x ${escolhido.fora}\n\nCrave o placar exato no Discord: ${LINK_DISCORD}`);
+        wa.enviar(`🎯 *BOLÃO EXATO DO DIA!*\n\n${escolhido.casa} x ${escolhido.fora}\n\nCrave em: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
       }
     }
   } catch (e) { console.error('[EXATO] erro ao definir bolão:', e.message); }
@@ -212,11 +259,13 @@ async function checarAoVivo() {
       if (guild) servidor.setEstado('membros', guild.memberCount);
     } catch {}
     try {
-      const rk = db.ranking().slice(0, 50);
+      const rk = db.ranking().slice(0, 100);
       servidor.setEstado('ranking', rk.slice(0, 20));
       if (nv && nv.rankingXp) servidor.setEstado('rankingXP', nv.rankingXp().slice(0, 20));
       sync.syncRanking(rk);       // → Supabase (loga)
       sync.syncJogos(jogos);      // → Supabase (loga)
+      // Cargo automático Top 100
+      atualizarCargoTop100(client, rk).catch(e => console.error('[TOP100]', e.message));
     } catch (e) {}
     if (jogos.length) {
       console.log(`[MONITOR] ${jogos.length} jogo(s) hoje:`,
@@ -273,7 +322,7 @@ async function checarAoVivo() {
             if (ev && ev.autorGol) autor = `\n🎯 Gol de **${ev.autorGol}**`;
           } catch {}
           if (chGols) chGols.send({ embeds: [embedGol({ casa: jogo.casa, fora: jogo.fora, golsCasa: jogo.golsCasa, golsFora: jogo.golsFora, minuto: '—', autor })] }).catch(() => {});
-          wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}${autor ? `\n${autor.replace(/\*/g,'')}` : ''}\n\n👉 ${LINK_DISCORD}`);
+          wa.enviar(`⚽ *GOL!* ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}${autor ? `\n${autor.replace(/\*/g,'')}` : ''}\n\n🌐 ${LINK_SITE}\n📱 ${LINK_DISCORD}`);
         } else if (totalAtual < totalAnt) {
           // GOL ANULADO — o placar diminuiu
           if (chGols) chGols.send(`❌ **Gol anulado!** ${jogo.casa} ${jogo.golsCasa} x ${jogo.golsFora} ${jogo.fora}`).catch(() => {});
@@ -300,7 +349,7 @@ async function checarAoVivo() {
           if (cravaram && cravaram.length && chGols) {
             const nomes = cravaram.map(c => c.nome).join(', ');
             chGols.send(`🎯👑 **BOLÃO EXATO!** ${nomes} cravou o placar ${jogo.golsCasa}x${jogo.golsFora} de ${jogo.casa} x ${jogo.fora}! Novo Rei do Exato!`).catch(() => {});
-            wa.enviar(`🎯👑 *BOLÃO EXATO!* ${nomes} cravou ${jogo.golsCasa}x${jogo.golsFora}! Confira: ${LINK_DISCORD}`);
+            wa.enviar(`🎯👑 *BOLÃO EXATO!* ${nomes} cravou ${jogo.golsCasa}x${jogo.golsFora}! 🌐 ${LINK_SITE}/dashboard.html\n📱 ${LINK_DISCORD}`);
           }
         });
       }
@@ -511,11 +560,11 @@ async function entregaOdds(titulo) {
         ? `${j.casa} @ ${j.melhor.casa.odd}` : `${j.fora} @ ${j.melhor.fora.odd}`;
       textoWpp += `⚽ ${j.casa} x ${j.fora}\n   Favorito: ${fav}\n`;
     }
-    textoWpp += `\n🔞 +18. Conteúdo recreativo, não é recomendação.\n👉 Análise completa no Discord: ${LINK_DISCORD}`;
+    textoWpp += `\n🔞 +18. Conteúdo recreativo, não é recomendação.\n🌐 Site: ${LINK_SITE}\n📱 Discord: ${LINK_DISCORD}`;
     wa.enviar(textoWpp);
     sync.salvarOddsDoDia(jogos); // persiste no Supabase p/ o site
   } else {
-    wa.enviar(`📢 *${titulo || 'Odds do dia'}*\n\nSem odds disponíveis agora. Confira no Discord: ${LINK_DISCORD}`);
+    wa.enviar(`📢 *${titulo || 'Odds do dia'}*\n\nSem odds disponíveis agora. 🌐 Site: ${LINK_SITE}\n📱 Discord: ${LINK_DISCORD}`);
   }
 }
 // (Os disparos de 11h e 20h agora são feitos pelo agendador robusto lá em cima)
@@ -696,7 +745,7 @@ client.on('interactionCreate', async interaction => {
       const chA = canal(CANAL_APOSTAS);
       const msgG = `🟢 **GREEN!** ${descG} ${jogoG ? `(${jogoG})` : ''} pagou **${oddG}**! 🔞 +18, jogo responsável.`;
       if (chA) chA.send(msgG).catch(() => {});
-      wa.enviar(`🟢 *GREEN!* ${descG} pagou ${oddG}!\n\n👉 ${LINK_DISCORD}`);
+      wa.enviar(`🟢 *GREEN!* ${descG} pagou ${oddG}!\n\n🌐 ${LINK_SITE}\n📱 ${LINK_DISCORD}`);
       await interaction.editReply('✅ Green registrado e fixado no site!');
 
     } else if (commandName === 'relatorio') {
