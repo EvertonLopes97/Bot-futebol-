@@ -62,6 +62,7 @@ async function jogosDoDia() {
     casa: traduzTime(m.homeTeam.name),
     fora: traduzTime(m.awayTeam.name),
     hora: new Date(m.utcDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }),
+    data: m.utcDate.split('T')[0], // ISO pro Supabase
     dataLocal: new Date(m.utcDate).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
     status: m.status,
     golsCasa: m.score.fullTime.home,
@@ -133,8 +134,12 @@ async function proximosJogos() {
     id: m.id,
     casa: traduzTime(m.homeTeam.name),
     fora: traduzTime(m.awayTeam.name),
-    data: new Date(m.utcDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' }),
+    data: m.utcDate.split('T')[0], // ISO AAAA-MM-DD pro Supabase
+    dataBR: new Date(m.utcDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' }),
     hora: new Date(m.utcDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }),
+    status: m.status,
+    golsCasa: m.score.fullTime.home,
+    golsFora: m.score.fullTime.away,
   }));
 }
 

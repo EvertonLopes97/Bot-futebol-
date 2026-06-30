@@ -304,7 +304,16 @@ async function checarAoVivo() {
       servidor.setEstado('ranking', rk.slice(0, 20));
       if (nv && nv.rankingXp) servidor.setEstado('rankingXP', nv.rankingXp().slice(0, 20));
       sync.syncRanking(rk);       // → Supabase (loga)
-      sync.syncJogos(jogos);      // → Supabase (loga)
+      // sincroniza jogos de hoje + próximos jogos (pra sempre ter o que palpitar)
+      let jogosParaSync = jogos;
+      try {
+        const proximos = await api.proximosJogos();
+        // junta hoje + próximos, sem duplicar por id
+        const ids = new Set(jogos.map(j => String(j.id)));
+        const extras = (proximos || []).filter(p => !ids.has(String(p.id)));
+        jogosParaSync = [...jogos, ...extras];
+      } catch (e) { console.error('[SYNC] próximos jogos:', e.message); }
+      sync.syncJogos(jogosParaSync);  // → Supabase (loga)
       // Cargo automático Top 100
       atualizarCargoTop100(client, rk).catch(e => console.error('[TOP100]', e.message));
     } catch (e) {}
@@ -758,7 +767,15 @@ client.on('interactionCreate', async interaction => {
   await interaction.deferReply();
   try {
     if (commandName === 'jogos') {
-      await interaction.editReply({ embeds: [embedJogosDoDia(await api.jogosDoDia())] });
+      const jogosHoje = await api.jogosDoDia();
+      // sincroniza no Supabase (hoje + próximos) pra atualizar a tabela do site
+      try {
+        const proximos = await api.proximosJogos();
+        const ids = new Set(jogosHoje.map(j => String(j.id)));
+        const extras = (proximos || []).filter(p => !ids.has(String(p.id)));
+        await sync.syncJogos([...jogosHoje, ...extras]);
+      } catch (e) { console.error('[/jogos] sync:', e.message); }
+      await interaction.editReply({ embeds: [embedJogosDoDia(jogosHoje)] });
     } else if (commandName === 'tabela') {
       const grupos = await api.tabela();
       if (!grupos.length) return interaction.editReply('Tabela ainda não disponível para esta fase.');

@@ -48,6 +48,7 @@ async function syncJogos(jogos) {
   if (!supabase) return;
   if (!jogos || !jogos.length) { console.log('[SYNC] sem jogos pra enviar.'); return; }
   try {
+    const hoje = new Date().toISOString().split('T')[0];
     const linhas = jogos.map(j => ({
       api_id: String(j.id),
       time_casa: j.casa,
@@ -56,11 +57,14 @@ async function syncJogos(jogos) {
       gols_fora: j.golsFora,
       status: j.status,
       hora: j.hora || null,
+      data: (j.data || hoje), // usa a data do jogo se vier, senão hoje
       atualizado_em: new Date().toISOString(),
     }));
+    // remove só jogos que já PASSARAM (data anterior a hoje), mantém hoje + futuros
+    await supabase.from('jogos_bot').delete().lt('data', hoje);
     const { error } = await supabase.from('jogos_bot').upsert(linhas, { onConflict: 'api_id' });
     if (error) console.error('[SYNC] ❌ jogos:', error.message);
-    else console.log(`[SYNC] ✅ jogos enviados (${linhas.length}).`);
+    else console.log(`[SYNC] ✅ ${linhas.length} jogos enviados (hoje + próximos), passados removidos.`);
   } catch (e) { console.error('[SYNC] ❌ jogos exceção:', e.message); }
 }
 
