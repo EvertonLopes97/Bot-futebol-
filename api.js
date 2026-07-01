@@ -1,9 +1,15 @@
 // api.js — Busca dados da Copa do Mundo na football-data.org
-const fetch = require('node-fetch');
+// Usa o fetch NATIVO do Node 22 (não o node-fetch) — resolve "Premature close" em respostas comprimidas
+const nodeFetch = require('node-fetch');
+const fetchFn = (typeof globalThis.fetch === 'function') ? globalThis.fetch.bind(globalThis) : nodeFetch;
 
 const BASE = 'https://api.football-data.org/v4';
 const KEY  = process.env.FOOTBALL_API_KEY;
-const headers = { 'X-Auth-Token': KEY };
+const headers = {
+  'X-Auth-Token': KEY,
+  'Accept': 'application/json',
+  'Accept-Encoding': 'identity', // pede resposta SEM compressão (evita Premature close)
+};
 
 // Converte uma data UTC pra AAAA-MM-DD no fuso de São Paulo (evita jogo de 21h virar "amanhã")
 function dataISOSaoPaulo(utcDateStr) {
@@ -19,7 +25,7 @@ async function get(url, tentativa = 1) {
     // timeout de 15s pra não travar esperando resposta que não vem
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(url, { headers, signal: controller.signal });
+    const res = await fetchFn(url, { headers, signal: controller.signal });
     clearTimeout(timeout);
     if (!res.ok) {
       console.error(`[API] Status ${res.status} em ${url}`);
