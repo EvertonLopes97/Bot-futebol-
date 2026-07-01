@@ -423,8 +423,8 @@ async function checarAoVivo() {
       if (jogo.golsCasa !== null) placarAnterior[key] = { placar: golsAtual, status, totalGols: (jogo.golsCasa ?? 0) + (jogo.golsFora ?? 0) };
     }
 
-    // Frequência: tem jogo em andamento → 2 min; senão se há jogo hoje → 5 min; senão → 15 min
-    proximoDelay = temAtivo ? 2 * 60 * 1000 : (jogos.some(j => j.status !== 'FINISHED') ? 5 * 60 * 1000 : 15 * 60 * 1000);
+    // Frequência: tem jogo em andamento → 2 min; senão se há jogo hoje → 5 min; senão → 8 min
+    proximoDelay = temAtivo ? 2 * 60 * 1000 : (jogos.some(j => j.status !== 'FINISHED') ? 5 * 60 * 1000 : 8 * 60 * 1000);
   } catch (e) {
     console.error('Monitor ao vivo:', e.message);
     proximoDelay = 5 * 60 * 1000;
