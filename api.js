@@ -12,15 +12,33 @@ function dataISOSaoPaulo(utcDateStr) {
 }
 
 // Helper que busca e trata erros (rate limit, manutenção, etc.) sem travar o bot
-async function get(url) {
+// Com retry automático — a API football-data.org às vezes fecha a conexão no meio (Premature close)
+async function get(url, tentativa = 1) {
+  const MAX_TENTATIVAS = 3;
   try {
-    const res = await fetch(url, { headers });
+    // timeout de 15s pra não travar esperando resposta que não vem
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(url, { headers, signal: controller.signal });
+    clearTimeout(timeout);
     if (!res.ok) {
       console.error(`[API] Status ${res.status} em ${url}`);
+      // 429 (rate limit) ou 5xx → vale tentar de novo
+      if ((res.status === 429 || res.status >= 500) && tentativa < MAX_TENTATIVAS) {
+        await new Promise(r => setTimeout(r, tentativa * 3000));
+        return get(url, tentativa + 1);
+      }
       return null;
     }
     return await res.json();
   } catch (e) {
+    // Premature close, timeout, ou erro de rede → tenta de novo
+    const recuperavel = /premature close|aborted|network|timeout|ECONNRESET|fetch failed/i.test(e.message || '');
+    if (recuperavel && tentativa < MAX_TENTATIVAS) {
+      console.warn(`[API] ${e.message} — tentativa ${tentativa}/${MAX_TENTATIVAS}, retry em ${tentativa * 3}s`);
+      await new Promise(r => setTimeout(r, tentativa * 3000));
+      return get(url, tentativa + 1);
+    }
     console.error(`[API] Falha ao buscar ${url}:`, e.message);
     return null;
   }
