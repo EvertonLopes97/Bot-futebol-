@@ -193,6 +193,10 @@ async function salvarOddsDoDia(odds) {
       favorito: j.melhor.casa.odd <= (j.melhor.fora.odd||99) ? j.casa : j.fora,
       odd_favorito: Math.min(j.melhor.casa.odd||99, j.melhor.fora.odd||99),
       odd_casa: j.melhor.casa.odd, odd_fora: j.melhor.fora.odd,
+      odd_empate: j.melhor.empate?.odd || null,
+      odd_over25: j.melhor.over25?.odd || null,
+      odd_under25: j.melhor.under25?.odd || null,
+      odd_ambas_sim: j.melhor.ambasSim?.odd || null,
       book: j.melhor.casa.book || j.melhor.fora.book,
       green: false,
     }));

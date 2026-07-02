@@ -122,24 +122,37 @@ function extrairMelhorOdd(fixture, oddsData) {
   try {
     const casa = fixture.participant1Name || oddsData.participant1Name || 'Casa';
     const fora = fixture.participant2Name || oddsData.participant2Name || 'Fora';
-    const melhor = { casa: { odd: 0, book: '' }, empate: { odd: 0, book: '' }, fora: { odd: 0, book: '' } };
+    const melhor = {
+      casa: { odd: 0, book: '' }, empate: { odd: 0, book: '' }, fora: { odd: 0, book: '' },
+      over25: { odd: 0, book: '' }, under25: { odd: 0, book: '' },
+      ambasSim: { odd: 0, book: '' }, ambasNao: { odd: 0, book: '' },
+    };
     const books = oddsData.bookmakerOdds || {};
 
     for (const [bookSlug, bookData] of Object.entries(books)) {
       // IGNORA completamente casas que não são brasileiras
       if (!ehCasaBR(bookSlug)) continue;
       const markets = (bookData && bookData.markets) || {};
-      const m101 = markets['101'];
-      if (!m101 || !m101.outcomes) continue;
-      const oc = m101.outcomes;
-      const preco = (id) => { try { return oc[id].players['0'].price || 0; } catch { return 0; } };
-      const ph = preco('101'), pd = preco('102'), pa = preco('103');
-      // entre casas BR, pega a melhor (maior) odd
+      const preco = (mid, oid) => {
+        try { return markets[mid].outcomes[oid].players['0'].price || 0; } catch { return 0; }
+      };
+      // 1X2 (mercado 101): 101=casa, 102=empate, 103=fora
+      const ph = preco('101','101'), pd = preco('101','102'), pa = preco('101','103');
       if (ph > melhor.casa.odd) melhor.casa = { odd: ph, book: bookSlug };
       if (pd > melhor.empate.odd) melhor.empate = { odd: pd, book: bookSlug };
       if (pa > melhor.fora.odd) melhor.fora = { odd: pa, book: bookSlug };
+      // Over/Under 2.5 gols (mercado 102 na OddsPapi costuma ser totais)
+      const over = preco('102','13') || preco('102','25'); // over 2.5
+      const under = preco('102','12') || preco('102','26'); // under 2.5
+      if (over > melhor.over25.odd) melhor.over25 = { odd: over, book: bookSlug };
+      if (under > melhor.under25.odd) melhor.under25 = { odd: under, book: bookSlug };
+      // Ambas marcam (mercado 105/113): sim/não
+      const ambasS = preco('105','74') || preco('113','74');
+      const ambasN = preco('105','76') || preco('113','76');
+      if (ambasS > melhor.ambasSim.odd) melhor.ambasSim = { odd: ambasS, book: bookSlug };
+      if (ambasN > melhor.ambasNao.odd) melhor.ambasNao = { odd: ambasN, book: bookSlug };
     }
-    // Se nenhuma casa BR tinha odd pra esse jogo, não retorna (não usa internacional)
+    // Se nenhuma casa BR tinha odd 1X2 pra esse jogo, não retorna
     if (!melhor.casa.odd && !melhor.fora.odd) return null;
     return { casa, fora, melhor };
   } catch { return null; }
@@ -266,6 +279,7 @@ async function montarMultiplasProntas(jogos, estat) {
       .addFields(
         { name: 'Odd combinada', value: `${comb.toFixed(2)}x`, inline: true },
         { name: 'Prob. implícita', value: `${(prob*100).toFixed(1)}%`, inline: true },
+        { name: '💡 Dica', value: pernas.length <= 4 ? 'Aposte valores baixos. 2-4 seleções é o ideal.' : 'Muitas seleções = mais risco.', inline: false },
       )
       .setFooter({ text: '📊 = dado real | ~ = estimativa | 🔞 +18 | Jogue com responsabilidade. ' + AVISO_REF });
   }
@@ -338,7 +352,26 @@ async function montarMultiplasProntas(jogos, estat) {
   }
   const sonhos = montar('🌟 Múltipla DOS SONHOS — Mercados Avançados', 0xFF2E63, pSonho.slice(0,5));
 
-  return [segura, equil, sonhos].filter(Boolean);
+  // ── COMBINADA INTELIGENTE: estratégia recomendada (favorito seguro + gols provável) ──
+  // Baseado em boas práticas: 2-4 seleções, misturar favorito (odd baixa) com mercado de alta probabilidade
+  const pInteligente = [];
+  // 1 banca: o favorito mais seguro (menor odd entre 1.30 e 1.80)
+  const banca = ordenados.map(favorito).filter(f => f.odd >= 1.30 && f.odd <= 1.80).sort((a,b)=>a.odd-b.odd)[0];
+  if (banca) pInteligente.push({ jogo: banca.jogo, txt: `${banca.time} vence (banca)`, odd: banca.odd, book: banca.book, tipo: 'REAL', just: 'favorito mais seguro' });
+  // + mercados de gols de alta probabilidade (+1.5 gols é dos mais prováveis no futebol)
+  for (const j of ordenados.slice(0, 3)) {
+    if (pInteligente.length >= 4) break;
+    let sc = null, sf = null;
+    if (estat) { try { [sc, sf] = await Promise.all([estat.statsTime(j.casa), estat.statsTime(j.fora)]); } catch {} }
+    const mg = (sc?.golsMarcadosMedia || 1.2) + (sf?.golsMarcadosMedia || 1.1);
+    // +1.5 gols: alta probabilidade, odd baixa mas segura
+    if (mg >= 2.0) {
+      pInteligente.push({ jogo: `${j.casa} x ${j.fora}`, txt: '+1.5 gols no jogo', odd: 1.35, book: 'análise', tipo: mg && sc ? 'REAL':'EST', just: `média ~${mg.toFixed(1)} gols/jogo` });
+    }
+  }
+  const inteligente = montar('🎯 Múltipla Combinada Inteligente — Estratégia', 0x00A8E8, pInteligente.slice(0,4));
+
+  return [segura, equil, inteligente, sonhos].filter(Boolean);
 }
 
 module.exports = { buscarOddsDoDia, dicasDoDia, multiplaDosSonhos, relevanciaJogo, montarMultiplasProntas, setRefs };
