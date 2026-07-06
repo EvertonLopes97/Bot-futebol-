@@ -1,6 +1,13 @@
 // supabase-sync.js — Sincroniza dados do bot → tabelas estruturadas do Supabase
 // Para o site ler ranking, jogos e palpites do MESMO lugar.
 // LOGA cada operação (sucesso/erro) pra facilitar debug no Railway.
+
+// Data "hoje" no fuso de São Paulo (AAAA-MM-DD) — usado em TODAS as tabelas
+// pra o site e o bot sempre concordarem sobre qual é "hoje".
+function hojeSP() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+}
+
 let supabase = null;
 
 function init() {
@@ -48,18 +55,22 @@ async function syncJogos(jogos) {
   if (!supabase) return;
   if (!jogos || !jogos.length) { console.log('[SYNC] sem jogos pra enviar.'); return; }
   try {
-    const hoje = new Date().toISOString().split('T')[0];
-    const linhas = jogos.map(j => ({
-      api_id: String(j.id),
-      time_casa: j.casa,
-      time_fora: j.fora,
-      gols_casa: j.golsCasa,
-      gols_fora: j.golsFora,
-      status: j.status,
-      hora: j.hora || null,
-      data: (j.data || hoje), // usa a data do jogo se vier, senão hoje
-      atualizado_em: new Date().toISOString(),
-    }));
+    const hoje = hojeSP();
+    const linhas = jogos
+      // ignora jogos sem nome dos times (evita quebrar o insert com not-null)
+      .filter(j => (j.casa || j.time_casa) && (j.fora || j.time_fora))
+      .map(j => ({
+        api_id: String(j.id),
+        time_casa: j.casa || j.time_casa || 'A definir',
+        time_fora: j.fora || j.time_fora || 'A definir',
+        gols_casa: (j.golsCasa ?? j.gols_casa ?? null),
+        gols_fora: (j.golsFora ?? j.gols_fora ?? null),
+        status: j.status || 'TIMED',
+        hora: j.hora || null,
+        data: (j.data || hoje),
+        atualizado_em: new Date().toISOString(),
+      }));
+    if (!linhas.length) { console.log('[SYNC] ⚠️ nenhum jogo válido pra enviar (todos sem nome).'); return; }
     // remove só jogos que já PASSARAM (data anterior a hoje), mantém hoje + futuros
     await supabase.from('jogos_bot').delete().lt('data', hoje);
     const { error } = await supabase.from('jogos_bot').upsert(linhas, { onConflict: 'api_id' });
@@ -88,7 +99,7 @@ async function syncPalpite(discordId, nome, jogoId, golsCasa, golsFora) {
 async function definirBolaoExato(jogo) {
   if (!supabase) return null;
   try {
-    const hoje = new Date().toISOString().split('T')[0];
+    const hoje = hojeSP();
     const { data, error } = await supabase.from('bolao_exato').upsert({
       data: hoje,
       jogo_api_id: String(jogo.id),
@@ -184,7 +195,7 @@ module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato,
 async function salvarOddsDoDia(odds) {
   if (!supabase || !odds || !odds.length) return;
   try {
-    const hoje = new Date().toISOString().split('T')[0];
+    const hoje = hojeSP();
     // limpa as do dia anterior e salva as novas
     await supabase.from('odds_dia').delete().lt('data', hoje);
     const linhas = odds.map(j => ({
@@ -210,7 +221,7 @@ async function salvarOddsDoDia(odds) {
 async function marcarGreen(jogo, descricao, odd) {
   if (!supabase) return;
   try {
-    const hoje = new Date().toISOString().split('T')[0];
+    const hoje = hojeSP();
     await supabase.from('odds_dia').update({ green: true }).eq('data', hoje).eq('jogo', jogo);
     // também salva na tabela de histórico de greens
     const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
