@@ -406,6 +406,8 @@ async function checarAoVivo() {
             u.send(`${msg}\n\n🌐 Veja seu ranking: ${LINK_SITE}/dashboard.html`).catch(() => {});
           }).catch(() => {});
         }
+        // apura os palpites do SITE (soma pontos no ranking)
+        sync.apurarPalpitesSite(String(jogo.id), jogo.golsCasa, jogo.golsFora).catch(e => console.error('[APURAR-SITE]', e.message));
         // apura o bolão exato (se este era o jogo do dia)
         sync.apurarBolaoExato(String(jogo.id), jogo.golsCasa, jogo.golsFora).then(cravaram => {
           if (cravaram && cravaram.length && chGols) {

@@ -65,6 +65,8 @@ async function syncJogos(jogos) {
         time_fora: j.fora || j.time_fora || 'A definir',
         gols_casa: (j.golsCasa ?? j.gols_casa ?? null),
         gols_fora: (j.golsFora ?? j.gols_fora ?? null),
+        penaltis_casa: (j.penaltisCasa ?? j.penaltis_casa ?? null),
+        penaltis_fora: (j.penaltisFora ?? j.penaltis_fora ?? null),
         status: j.status || 'TIMED',
         hora: j.hora || null,
         data: (j.data || hoje),
@@ -94,8 +96,46 @@ async function syncPalpite(discordId, nome, jogoId, golsCasa, golsFora) {
   } catch (e) { console.error('[SYNC] ❌ palpite exceção:', e.message); }
 }
 
-// ── BOLÃO EXATO DIÁRIO ──
-// Define o jogo do dia (mais popular). Retorna o bolão criado.
+// Apura os palpites do SITE (palpites_bot) quando um jogo termina.
+// Soma pontos num ranking PRÓPRIO DO SITE (ranking_site) — separado do Discord.
+// Marca o palpite como apurado pra nunca contar duas vezes.
+async function apurarPalpitesSite(jogoApiId, golsCasa, golsFora) {
+  if (!supabase) return;
+  try {
+    const { data: palps } = await supabase.from('palpites_bot')
+      .select('*').eq('jogo_api_id', String(jogoApiId)).or('apurado.is.null,apurado.eq.false');
+    if (!palps || !palps.length) { console.log(`[APURAR-SITE] nenhum palpite pendente pro jogo ${jogoApiId}`); return; }
+
+    for (const p of palps) {
+      let pts = 1, tipo = 'participou';
+      if (p.palpite_casa === golsCasa && p.palpite_fora === golsFora) { pts = 10; tipo = 'exato'; }
+      else if (Math.sign(p.palpite_casa - p.palpite_fora) === Math.sign(golsCasa - golsFora)) { pts = 3; tipo = 'resultado'; }
+
+      await supabase.from('palpites_bot').update({ apurado: true, pontos_ganhos: pts }).eq('id', p.id);
+
+      // soma no RANKING DO SITE (ranking_site), casando por discord_id
+      const { data: rk } = await supabase.from('ranking_site').select('*').eq('discord_id', String(p.discord_id)).maybeSingle();
+      if (rk) {
+        await supabase.from('ranking_site').update({
+          nome: p.nome || rk.nome,
+          pontos: (rk.pontos || 0) + pts,
+          exatos: (rk.exatos || 0) + (tipo === 'exato' ? 1 : 0),
+          participacoes: (rk.participacoes || 0) + 1,
+          atualizado_em: new Date().toISOString(),
+        }).eq('discord_id', String(p.discord_id));
+      } else {
+        await supabase.from('ranking_site').insert({
+          discord_id: String(p.discord_id), nome: p.nome || 'Membro',
+          pontos: pts, exatos: (tipo === 'exato' ? 1 : 0), participacoes: 1,
+          atualizado_em: new Date().toISOString(),
+        });
+      }
+    }
+    console.log(`[APURAR-SITE] ✅ ${palps.length} palpite(s) do site apurados (ranking_site) pro jogo ${jogoApiId}`);
+  } catch (e) { console.error('[APURAR-SITE] ❌', e.message); }
+}
+
+
 async function definirBolaoExato(jogo) {
   if (!supabase) return null;
   try {
@@ -143,6 +183,21 @@ async function apurarBolaoExato(jogoApiId, golsCasa, golsFora) {
 
     for (const c of cravaram) {
       await supabase.from('palpites_exato').update({ cravou: true }).eq('id', c.id);
+      // soma os 10 pontos do exato no ranking do site (se o palpite tem discord_id)
+      if (c.discord_id) {
+        const { data: rk } = await supabase.from('ranking_site').select('*').eq('discord_id', String(c.discord_id)).maybeSingle();
+        if (rk) {
+          await supabase.from('ranking_site').update({
+            pontos: (rk.pontos || 0) + 10, exatos: (rk.exatos || 0) + 1,
+            atualizado_em: new Date().toISOString(),
+          }).eq('discord_id', String(c.discord_id));
+        } else {
+          await supabase.from('ranking_site').insert({
+            discord_id: String(c.discord_id), nome: c.nome || 'Membro',
+            pontos: 10, exatos: 1, participacoes: 1, atualizado_em: new Date().toISOString(),
+          });
+        }
+      }
     }
     // atualiza o rei do exato (último que cravou vira destaque)
     if (cravaram.length) {
@@ -189,7 +244,7 @@ async function setLiveStatus({ ativa, plataforma, canal }) {
   } catch (e) { console.error('[SYNC] ❌ live exceção:', e.message); }
 }
 
-module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, salvarGreen, salvarOddsDoDia, marcarGreen, setLiveStatus };
+module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, apurarPalpitesSite, salvarGreen, salvarOddsDoDia, marcarGreen, setLiveStatus };
 
 // Salva as odds do dia no Supabase (ficam ativas até meia-noite)
 async function salvarOddsDoDia(odds) {
