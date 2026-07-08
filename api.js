@@ -87,18 +87,27 @@ async function jogosDoDia() {
   if (!data || !data.matches) return [];
   // Filtra só os jogos cuja data LOCAL (Brasil) é hoje, OU que estão em andamento
   const hojeLocal = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  return data.matches.map(m => ({
+  return data.matches.map(m => {
+    const pen = m.score.penalties || {};
+    const temPenaltis = pen.home != null && pen.away != null;
+    // Se foi pra pênaltis, o placar "de gols" é o do tempo regular/prorrogação (não soma os pênaltis)
+    const regHome = m.score.regularTime?.home ?? m.score.fullTime.home;
+    const regAway = m.score.regularTime?.away ?? m.score.fullTime.away;
+    return {
     id: m.id,
     casa: traduzTime(m.homeTeam.name),
     fora: traduzTime(m.awayTeam.name),
     hora: new Date(m.utcDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }),
-    data: dataISOSaoPaulo(m.utcDate), // ISO pro Supabase (fuso SP, evita virar 'amanhã')
+    data: dataISOSaoPaulo(m.utcDate),
     dataLocal: new Date(m.utcDate).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
     status: m.status,
-    golsCasa: m.score.fullTime.home,
-    golsFora: m.score.fullTime.away,
+    golsCasa: temPenaltis ? regHome : m.score.fullTime.home,
+    golsFora: temPenaltis ? regAway : m.score.fullTime.away,
+    penaltisCasa: temPenaltis ? pen.home : null,
+    penaltisFora: temPenaltis ? pen.away : null,
     fase: m.stage,
-  })).filter(j =>
+    };
+  }).filter(j =>
     j.dataLocal === hojeLocal ||
     j.status === 'IN_PLAY' || j.status === 'PAUSED' ||
     (j.golsCasa !== null && j.status !== 'FINISHED')
