@@ -190,6 +190,8 @@ async function agendaDoDia() {
   const jogos = await api.jogosDoDia();
   if (!jogos.length) {
     ch.send('📅 **Agenda de hoje:** sem jogos da Copa hoje. Volte amanhã! ⚽').catch(() => {});
+    // mesmo sem jogo hoje, tenta criar o bolão de AMANHÃ (pra palpitar na véspera)
+    await definirBolaoAmanha();
     return;
   }
   ch.send({ embeds: [embedJogosDoDia(jogos)] }).catch(e => console.error('Envio agenda:', e.message));
@@ -213,6 +215,31 @@ async function agendaDoDia() {
       }
     }
   } catch (e) { console.error('[EXATO] erro ao definir bolão:', e.message); }
+
+  // ── BOLÃO EXATO DE AMANHÃ (pra palpitar na véspera) ──
+  await definirBolaoAmanha();
+}
+
+// Cria o bolão exato de amanhã com o mesmo critério (jogo mais relevante).
+// Roda mesmo em dias sem jogo hoje.
+async function definirBolaoAmanha() {
+  try {
+    const proximos = await api.proximosJogos();
+    const amanha = new Date(Date.now() + 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    const jogosAmanha = (proximos || []).filter(j => j.data === amanha);
+    if (jogosAmanha.length) {
+      const ordenadosAmanha = jogosAmanha
+        .map(j => ({ ...j, score: dica.relevanciaJogo(j) }))
+        .sort((a, b) => b.score - a.score);
+      const escolhidoAmanha = ordenadosAmanha[0];
+      if (escolhidoAmanha) {
+        const bolaoAmanha = await sync.definirBolaoExato(escolhidoAmanha, amanha);
+        if (bolaoAmanha) console.log(`[EXATO] ✅ bolão de AMANHÃ definido: ${escolhidoAmanha.casa} x ${escolhidoAmanha.fora}`);
+      }
+    } else {
+      console.log('[EXATO] nenhum jogo de amanhã encontrado pra definir bolão antecipado.');
+    }
+  } catch (e) { console.error('[EXATO] erro ao definir bolão de amanhã:', e.message); }
 }
 
 // Verificador que roda a cada minuto e dispara as tarefas no horário certo de Brasília
