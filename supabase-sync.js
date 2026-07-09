@@ -136,19 +136,26 @@ async function apurarPalpitesSite(jogoApiId, golsCasa, golsFora) {
 }
 
 
-async function definirBolaoExato(jogo) {
+async function definirBolaoExato(jogo, dataAlvo) {
   if (!supabase) return null;
   try {
-    const hoje = hojeSP();
-    const { data, error } = await supabase.from('bolao_exato').upsert({
-      data: hoje,
+    const data = dataAlvo || hojeSP();
+    // TRAVA DE SEGURANÇA: se o jogo tem data própria e ela NÃO bate com a data alvo,
+    // não grava (evita salvar o jogo de amanhã no lugar do de hoje).
+    if (jogo.data && jogo.data !== data) {
+      console.log(`[EXATO] ⚠️ ignorado: jogo ${jogo.casa} x ${jogo.fora} é de ${jogo.data}, mas tentou gravar como ${data}`);
+      return null;
+    }
+    const { data: resultado, error } = await supabase.from('bolao_exato').upsert({
+      data,
       jogo_api_id: String(jogo.id),
       time_casa: jogo.casa,
       time_fora: jogo.fora,
+      hora: jogo.hora || null,
     }, { onConflict: 'data' }).select().single();
     if (error) { console.error('[EXATO] ❌ definir:', error.message); return null; }
-    console.log(`[EXATO] ✅ bolão do dia: ${jogo.casa} x ${jogo.fora}`);
-    return data;
+    console.log(`[EXATO] ✅ bolão ${data}: ${jogo.casa} x ${jogo.fora}`);
+    return resultado;
   } catch (e) { console.error('[EXATO] ❌ exceção:', e.message); return null; }
 }
 

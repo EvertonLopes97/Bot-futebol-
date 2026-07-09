@@ -199,20 +199,25 @@ async function agendaDoDia() {
   wa.enviar(`⚽ *JOGOS DE HOJE — Copa do Mundo*\n${lista}\n\n👉 Palpita agora: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
   console.log(`[AGENDA] disparada com ${jogos.length} jogos`);
 
-  // ── BOLÃO EXATO DO DIA: escolhe o jogo mais popular ──
+  // ── BOLÃO EXATO DO DIA: escolhe o jogo mais popular ENTRE OS DE HOJE ──
   try {
-    const ordenados = jogos
+    const hojeSP = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    // filtra explicitamente só jogos cuja data é hoje (evita pegar jogo de amanhã por engano)
+    const jogosHoje = jogos.filter(j => j.data === hojeSP);
+    const ordenados = jogosHoje
       .map(j => ({ ...j, score: dica.relevanciaJogo(j) }))
       .sort((a, b) => b.score - a.score);
     const escolhido = ordenados[0];
     if (escolhido) {
-      const bolao = await sync.definirBolaoExato(escolhido);
+      const bolao = await sync.definirBolaoExato(escolhido, hojeSP);
       if (bolao) {
         servidor.setEstado('bolaoExato', bolao);
         const msg = `🎯 **BOLÃO EXATO DO DIA!**\n\n**${escolhido.casa} x ${escolhido.fora}**\n\nCrave o **placar exato** e vire o 👑 Rei do Exato! Use **/exato** pra palpitar.`;
         ch.send(msg).catch(() => {});
         wa.enviar(`🎯 *BOLÃO EXATO DO DIA!*\n\n${escolhido.casa} x ${escolhido.fora}\n\nCrave em: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
       }
+    } else {
+      console.log('[EXATO] nenhum jogo de hoje pra definir bolão do dia.');
     }
   } catch (e) { console.error('[EXATO] erro ao definir bolão:', e.message); }
 
