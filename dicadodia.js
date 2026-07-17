@@ -30,7 +30,7 @@ function jogosPorEntrega() {
 
 // Filtro Copa do Mundo: tournamentId da Copa na OddsPapi (configurável)
 const COPA_TOURNAMENT_IDS = (process.env.ODDSPAPI_COPA_IDS || '').split(',').map(s=>s.trim()).filter(Boolean);
-const SO_COPA = (process.env.SO_COPA || 'true') === 'true';
+const SO_COPA = (process.env.SO_COPA || 'false') === 'true'; // padrão FALSE: a Copa acabou, agora é clube
 
 
 // ── cache (respeita o cooldown da API) ──
@@ -190,7 +190,12 @@ const TIMES_POPULARES = {
   'Belgium':6,'Bélgica':6,'Croatia':6,'Croácia':6,'United States':6,'Estados Unidos':6,
   'Japan':5,'Japão':5,'South Korea':5,'Coreia do Sul':5,'Morocco':6,'Marrocos':6,
 };
-function popTime(nome){ return TIMES_POPULARES[nome] || 3; }
+// Fama do time: 1º procura nos clubes da Série A (times.js), 2º nas seleções, senão 3.
+const timesSerieA = require('./times.js');
+function popTime(nome){
+  if (timesSerieA.ehSerieA(nome)) return timesSerieA.popularidade(nome);
+  return TIMES_POPULARES[nome] || 3;
+}
 
 // Score de relevância do jogo: soma da fama dos dois times + bônus se for equilibrado
 function relevanciaJogo(j) {

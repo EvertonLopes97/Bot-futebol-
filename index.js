@@ -99,7 +99,7 @@ async function atualizarCargoTop100(discordClient, ranking) {
 // ════════ EMBEDS ════════
 function embedJogosDoDia(jogos) {
   if (!jogos.length) return new EmbedBuilder().setColor(COR_LIME)
-    .setTitle('⚽ Copa do Mundo — Jogos de Hoje')
+    .setTitle('⚽ Jogos de Hoje')
     .setDescription('Nenhum jogo hoje. Aproveita pra palpitar nos próximos! 😄')
     .setFooter({ text: 'Hub Lab C.O' });
   const linhas = jogos.map(j => {
@@ -108,14 +108,14 @@ function embedJogosDoDia(jogos) {
     return `${status} **${j.casa}** ${placar} **${j.fora}**`;
   });
   return new EmbedBuilder().setColor(COR_LIME)
-    .setTitle('⚽ Copa do Mundo — Jogos de Hoje')
+    .setTitle('⚽ Jogos de Hoje')
     .setDescription(linhas.join('\n'))
     .setFooter({ text: 'Hub Lab C.O • Use /palpite pra palpitar!' }).setTimestamp();
 }
 function embedGol(j) {
   const e = new EmbedBuilder().setColor(COR_GOL).setTitle('⚽ GOOOOL!')
     .setDescription(`## ${j.casa} **${j.golsCasa}** x **${j.golsFora}** ${j.fora}${j.autor || ''}`)
-    .setFooter({ text: 'Hub Lab C.O • Copa do Mundo' }).setTimestamp();
+    .setFooter({ text: 'Hub Lab C.O • Futebol Brasileiro' }).setTimestamp();
   if (j.minuto && j.minuto !== '—') e.addFields({ name: '🕐 Minuto', value: `${j.minuto}'`, inline: true });
   return e;
 }
@@ -128,7 +128,7 @@ function embedFimDeJogo(j) {
 }
 function embedTabela(grupos) {
   const embed = new EmbedBuilder().setColor(COR_TABELA)
-    .setTitle('📊 Copa do Mundo — Classificação')
+    .setTitle('📊 Brasileirão — Classificação')
     .setFooter({ text: 'Hub Lab C.O' }).setTimestamp();
   for (const g of grupos.slice(0, 6)) {
     const nome = String(g.grupo).replace('GROUP_', 'Grupo ');
@@ -140,7 +140,7 @@ function embedTabela(grupos) {
 function embedArtilheiros(lista) {
   const m = ['🥇', '🥈', '🥉'];
   const linhas = lista.map((a, i) => `${m[i] || `${a.pos}.`} **${a.nome}** (${a.time}) — ${a.gols} gol${a.gols !== 1 ? 's' : ''}`).join('\n');
-  return new EmbedBuilder().setColor(COR_GOL).setTitle('🥇 Copa do Mundo — Artilheiros')
+  return new EmbedBuilder().setColor(COR_GOL).setTitle('🥇 Brasileirão — Artilheiros')
     .setDescription(linhas || 'Ainda sem gols marcados.')
     .setFooter({ text: 'Hub Lab C.O' }).setTimestamp();
 }
@@ -158,11 +158,11 @@ function embedRanking(lista) {
 
 function embedProximos(jogos) {
   if (!jogos.length) return new EmbedBuilder().setColor(COR_LIME)
-    .setTitle('📅 Próximos Jogos da Copa')
+    .setTitle('📅 Próximos Jogos')
     .setDescription('Sem jogos agendados no momento.').setFooter({ text: 'Hub Lab C.O' });
   const linhas = jogos.map(j => `📅 ${j.data} ${j.hora} — **${j.casa}** vs **${j.fora}**`);
   return new EmbedBuilder().setColor(COR_LIME)
-    .setTitle('📅 Próximos Jogos da Copa')
+    .setTitle('📅 Próximos Jogos')
     .setDescription(linhas.join('\n'))
     .setFooter({ text: 'Hub Lab C.O • Use /palpite pra dar seu palpite!' }).setTimestamp();
 }
@@ -189,14 +189,14 @@ async function agendaDoDia() {
   if (!ch) return;
   const jogos = await api.jogosDoDia();
   if (!jogos.length) {
-    ch.send('📅 **Agenda de hoje:** sem jogos da Copa hoje. Volte amanhã! ⚽').catch(() => {});
+    ch.send('📅 **Agenda de hoje:** sem jogos dos nossos clubes hoje. Volte amanhã! ⚽').catch(() => {});
     // mesmo sem jogo hoje, tenta criar o bolão de AMANHÃ (pra palpitar na véspera)
     await definirBolaoAmanha();
     return;
   }
   ch.send({ embeds: [embedJogosDoDia(jogos)] }).catch(e => console.error('Envio agenda:', e.message));
   const lista = jogos.map(j => `• ${j.casa} x ${j.fora} (${j.hora})`).join('\n');
-  wa.enviar(`⚽ *JOGOS DE HOJE — Copa do Mundo*\n${lista}\n\n👉 Palpita agora: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
+  wa.enviar(`⚽ *JOGOS DE HOJE*\n${lista}\n\n👉 Palpita agora: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
   console.log(`[AGENDA] disparada com ${jogos.length} jogos`);
 
   // ── BOLÃO EXATO DO DIA: escolhe o jogo mais popular ENTRE OS DE HOJE ──
@@ -273,7 +273,7 @@ setInterval(async () => {
     marcar('agenda07');
     console.log('[AGENDA] 7h — disparando agenda do dia');
     await agendaDoDia();
-    await entregaOdds('Odds do dia — Copa do Mundo ⚽');
+    await entregaOdds('Odds do dia ⚽');
   }
   // 20:00 → odds pra amanhã
   if (h === 20 && m === 0 && !jaFez('odds20')) {
@@ -709,11 +709,11 @@ function diagnosticoCanais() {
 
 // ════════ COMANDOS ════════
 const comandos = [
-  new SlashCommandBuilder().setName('jogos').setDescription('Mostra os jogos da Copa de hoje'),
-  new SlashCommandBuilder().setName('tabela').setDescription('Mostra a classificação da Copa do Mundo'),
-  new SlashCommandBuilder().setName('artilheiros').setDescription('Top 10 artilheiros da Copa'),
+  new SlashCommandBuilder().setName('jogos').setDescription('Jogos de hoje dos clubes da Série A (qualquer competição)'),
+  new SlashCommandBuilder().setName('tabela').setDescription('Classificação do Brasileirão Série A'),
+  new SlashCommandBuilder().setName('artilheiros').setDescription('Top 10 artilheiros do Brasileirão'),
   new SlashCommandBuilder().setName('ranking').setDescription('Ranking de palpites da Hub Lab C.O'),
-  new SlashCommandBuilder().setName('proximos').setDescription('Próximos jogos da Copa (pra você palpitar)'),
+  new SlashCommandBuilder().setName('proximos').setDescription('Próximos jogos (pra você palpitar)'),
   new SlashCommandBuilder().setName('nivel').setDescription('Veja seu nível e XP na Hub Lab C.O')
     .addUserOption(o => o.setName('membro').setDescription('Ver o nível de outro membro')),
   new SlashCommandBuilder().setName('rankxp').setDescription('Ranking de XP da comunidade'),
@@ -1002,10 +1002,22 @@ client.on('interactionCreate', async interaction => {
       const jogos = await api.jogosDoDia();
       const jogo = jogos.find(j => String(j.id) === jogoId);
       if (!jogo) return interaction.editReply('❌ Jogo não encontrado. Use **/jogos** pra ver os disponíveis.');
+
+      // ── TRAVA DO APITO INICIAL ──
+      // Só aceita palpite se o jogo AINDA NÃO começou. Vale pra qualquer competição.
+      const ABERTOS = ['SCHEDULED', 'TIMED'];
+      if (!ABERTOS.includes(jogo.status)) {
+        const motivo = jogo.status === 'POSTPONED' ? '📅 Jogo **adiado** — os palpites reabrem quando remarcarem.'
+          : jogo.status === 'CANCELLED' ? '❌ Jogo **cancelado**.'
+          : `🔒 Palpites fechados — o jogo já começou!`;
+        return interaction.editReply(`${motivo}\n**${jogo.casa} x ${jogo.fora}**`);
+      }
+
       const res = db.registrar(interaction.user.id, interaction.user.username, String(jogo.id), gc, gf);
-      sync.syncPalpite(interaction.user.id, interaction.user.username, jogo.id, gc, gf); // → Supabase (loga)
+      // IMPORTANTE: só grava no Supabase se o palpite foi ACEITO (antes gravava mesmo quando rejeitado)
       if (res === 'fechado' || res === 'encerrado')
         return interaction.editReply(`🔒 Palpites já fechados para **${jogo.casa} x ${jogo.fora}**!`);
+      sync.syncPalpite(interaction.user.id, interaction.user.username, jogo.id, gc, gf); // → Supabase (loga)
       const embed = new EmbedBuilder().setColor(COR_LIME).setTitle('🎯 Palpite registrado!')
         .setDescription(`**${jogo.casa} ${gc} x ${gf} ${jogo.fora}**`)
         .addFields(

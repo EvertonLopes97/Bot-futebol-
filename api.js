@@ -1,146 +1,299 @@
-// api.js — Busca dados da Copa do Mundo na football-data.org
-// Usa o fetch NATIVO do Node 22 (não o node-fetch) — resolve "Premature close" em respostas comprimidas
+// api.js — HÍBRIDO. Segue os TIMES da Série A, não os campeonatos.
+//
+// FONTE 1 — football-data.org: Brasileirão Série A (BSA).
+//   Grátis: 10 req/MINUTO. Folgado → ao vivo de 1 em 1 min.
+//   Limitação: o plano free só cobre 12 ligas (BSA sim; Liberta/Copa BR/estaduais não).
+//
+// FONTE 2 — API-Football v3 (via RapidAPI): TODO o resto.
+//   Libertadores, Copa do Brasil, Sul-Americana, estaduais, Mundial, amistosos.
+//   Grátis: ~100 req/DIA. Por isso consultamos por DATA (1 req traz o dia inteiro
+//   do mundo todo) e filtramos os nossos 20 clubes localmente.
+//
+// Sem sobreposição: BSA sempre vem da fonte 1; a fonte 2 nunca duplica (dedup por times+data).
+
 const nodeFetch = require('node-fetch');
 const fetchFn = (typeof globalThis.fetch === 'function') ? globalThis.fetch.bind(globalThis) : nodeFetch;
+const times = require('./times.js');
 
+// ── FONTE 1: football-data.org ──
 const BASE = 'https://api.football-data.org/v4';
 const KEY  = process.env.FOOTBALL_API_KEY;
+const LIGA = process.env.COMPETICAO_LIGA || 'BSA'; // BSA = Brasileirão Série A. (WC = Copa do Mundo)
 const headers = {
   'X-Auth-Token': KEY,
   'Accept': 'application/json',
-  'Accept-Encoding': 'identity', // pede resposta SEM compressão (evita Premature close)
+  'Accept-Encoding': 'identity', // resposta SEM compressão (evita "Premature close")
 };
+
+// ── FONTE 2: API-Football (RapidAPI) ──
+const AF_HOST = process.env.APIFOOTBALL_HOST || 'api-football-v1.p.rapidapi.com';
+const AF_KEY  = process.env.RAPIDAPI_KEY;
+const AF_QUOTA_DIA = parseInt(process.env.AF_QUOTA_DIA || '90'); // margem sob os 100/dia
+const AF_LIGADA = (process.env.AF_LIGADA || 'true') === 'true';
+
+let afUsadas = 0;
+let afDia = new Date().toISOString().split('T')[0];
+let afPausaAte = 0; // pausa após 429
+
+function afResetSeNovoDia() {
+  const hoje = new Date().toISOString().split('T')[0];
+  if (hoje !== afDia) { afDia = hoje; afUsadas = 0; }
+}
+function afPodeUsar() {
+  afResetSeNovoDia();
+  if (!AF_LIGADA || !AF_KEY) return false;
+  if (afPausaAte && Date.now() < afPausaAte) return false;
+  return afUsadas < AF_QUOTA_DIA;
+}
+function afStatusQuota() {
+  afResetSeNovoDia();
+  return { usadas: afUsadas, quota: AF_QUOTA_DIA, restantes: AF_QUOTA_DIA - afUsadas, api: 'API-Football (RapidAPI)' };
+}
 
 // Converte uma data UTC pra AAAA-MM-DD no fuso de São Paulo (evita jogo de 21h virar "amanhã")
 function dataISOSaoPaulo(utcDateStr) {
-  const partes = new Date(utcDateStr).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }); // en-CA = AAAA-MM-DD
-  return partes; // já vem no formato ISO AAAA-MM-DD
+  return new Date(utcDateStr).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+}
+function horaSaoPaulo(utcDateStr) {
+  return new Date(utcDateStr).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+}
+function dataLocalBR(utcDateStr) {
+  return new Date(utcDateStr).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+}
+function hojeISO() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
 }
 
-// Helper que busca e trata erros (rate limit, manutenção, etc.) sem travar o bot
-// Com retry automático — a API football-data.org às vezes fecha a conexão no meio (Premature close)
+// ── GET football-data (com retry — a API às vezes fecha a conexão no meio) ──
 async function get(url, tentativa = 1) {
-  const MAX_TENTATIVAS = 3;
+  const MAX = 3;
   try {
-    // timeout de 15s pra não travar esperando resposta que não vem
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     const res = await fetchFn(url, { headers, signal: controller.signal });
     clearTimeout(timeout);
     if (!res.ok) {
-      console.error(`[API] Status ${res.status} em ${url}`);
-      // 429 (rate limit) ou 5xx → vale tentar de novo
-      if ((res.status === 429 || res.status >= 500) && tentativa < MAX_TENTATIVAS) {
-        await new Promise(r => setTimeout(r, tentativa * 3000));
-        return get(url, tentativa + 1);
-      }
+      if (res.status === 429) console.warn('[API-FD] rate limit (10/min) atingido.');
+      else console.error(`[API-FD] HTTP ${res.status} em ${url}`);
       return null;
     }
     return await res.json();
   } catch (e) {
-    // Premature close, timeout, ou erro de rede → tenta de novo
-    const recuperavel = /premature close|aborted|network|timeout|ECONNRESET|fetch failed/i.test(e.message || '');
-    if (recuperavel && tentativa < MAX_TENTATIVAS) {
-      console.warn(`[API] ${e.message} — tentativa ${tentativa}/${MAX_TENTATIVAS}, retry em ${tentativa * 3}s`);
-      await new Promise(r => setTimeout(r, tentativa * 3000));
+    if (tentativa < MAX) {
+      await new Promise(r => setTimeout(r, 800 * tentativa));
       return get(url, tentativa + 1);
     }
-    console.error(`[API] Falha ao buscar ${url}:`, e.message);
+    console.error(`[API-FD] falhou após ${MAX} tentativas:`, e.message);
     return null;
   }
 }
 
-// Tradução de nomes de times (API retorna em inglês)
-const TIMES = {
-  'Brazil':'Brasil','Argentina':'Argentina','France':'França',
-  'England':'Inglaterra','Portugal':'Portugal','Spain':'Espanha',
-  'Germany':'Alemanha','Netherlands':'Holanda','Uruguay':'Uruguai',
-  'Colombia':'Colômbia','Mexico':'México','USA':'Estados Unidos',
-  'United States':'Estados Unidos','Canada':'Canadá','Morocco':'Marrocos',
-  'Japan':'Japão','South Korea':'Coreia do Sul','Korea Republic':'Coreia do Sul',
-  'Australia':'Austrália','Senegal':'Senegal','Croatia':'Croácia',
-  'Switzerland':'Suíça','Denmark':'Dinamarca','Belgium':'Bélgica',
-  'Poland':'Polônia','Serbia':'Sérvia','Ecuador':'Equador',
-  'Cameroon':'Camarões','Ghana':'Gana','Tunisia':'Tunísia',
-  'Saudi Arabia':'Arábia Saudita','Iran':'Irã','IR Iran':'Irã',
-  'Qatar':'Catar','Costa Rica':'Costa Rica','Paraguay':'Paraguai',
-  'Turkey':'Turquia','Turkiye':'Turquia','Austria':'Áustria',
-  'Norway':'Noruega','Sweden':'Suécia','Ukraine':'Ucrânia',
-  'Hungary':'Hungria','Slovakia':'Eslováquia','Wales':'País de Gales',
-  'Scotland':'Escócia','Algeria':'Argélia','Nigeria':'Nigéria',
-  'Egypt':'Egito','South Africa':'África do Sul','Ivory Coast':'Costa do Marfim',
-  'New Zealand':'Nova Zelândia','Haiti':'Haiti','Bolivia':'Bolívia',
-  'Chile':'Chile','Peru':'Peru','Venezuela':'Venezuela',
-  'Panama':'Panamá','Honduras':'Honduras','Jamaica':'Jamaica',
-  'Cuba':'Cuba','Curacao':'Curaçao','Cape Verde':'Cabo Verde',
-  'Mali':'Mali','Burkina Faso':'Burkina Faso','Iraq':'Iraque',
-  'Jordan':'Jordânia','Uzbekistan':'Uzbequistão','Congo DR':'Congo DR',
-  'DR Congo':'Congo DR','Bosnia and Herzegovina':'Bósnia e Herz.',
-};
-function traduzTime(nome) { return TIMES[nome] || nome; }
+// ── GET API-Football (com controle de quota) ──
+async function getAF(path) {
+  if (!afPodeUsar()) return null;
+  try {
+    afUsadas++;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const res = await fetchFn(`https://${AF_HOST}/v3${path}`, {
+      headers: { 'x-rapidapi-key': AF_KEY, 'x-rapidapi-host': AF_HOST },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (res.status === 429) {
+      afPausaAte = Date.now() + 30 * 60 * 1000; // pausa 30 min
+      console.warn('[API-AF] 429 — cota estourada. Pausando 30 min.');
+      return null;
+    }
+    if (!res.ok) { console.error(`[API-AF] HTTP ${res.status} em ${path}`); return null; }
+    const json = await res.json();
+    if (json.errors && Object.keys(json.errors).length) {
+      console.warn('[API-AF] erro da API:', JSON.stringify(json.errors).slice(0, 200));
+      return null;
+    }
+    return json.response || [];
+  } catch (e) {
+    console.error('[API-AF] exceção:', e.message);
+    return null;
+  }
+}
 
-async function jogosDoDia() {
-  // Janela ampla: ontem até amanhã (cobre fuso UTC vs Brasil e jogos de madrugada)
-  const ontem = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-  const amanha = new Date(Date.now() + 86400000).toISOString().split('T')[0];
-  const data = await get(`${BASE}/competitions/WC/matches?dateFrom=${ontem}&dateTo=${amanha}`);
-  if (!data || !data.matches) return [];
-  // Filtra só os jogos cuja data LOCAL (Brasil) é hoje, OU que estão em andamento
-  const hojeLocal = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  return data.matches.map(m => {
-    const pen = m.score.penalties || {};
-    const temPenaltis = pen.home != null && pen.away != null;
-    // Se foi pra pênaltis, o placar "de gols" é o do tempo regular/prorrogação (não soma os pênaltis)
-    const regHome = m.score.regularTime?.home ?? m.score.fullTime.home;
-    const regAway = m.score.regularTime?.away ?? m.score.fullTime.away;
-    return {
-    id: m.id,
-    casa: traduzTime(m.homeTeam.name),
-    fora: traduzTime(m.awayTeam.name),
-    hora: new Date(m.utcDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }),
+// ── Tradução de nomes (seleções + clubes) ──
+const TIMES = {
+  'Brazil': 'Brasil', 'Argentina': 'Argentina', 'France': 'França', 'Spain': 'Espanha',
+  'Germany': 'Alemanha', 'England': 'Inglaterra', 'Portugal': 'Portugal', 'Italy': 'Itália',
+  'Netherlands': 'Holanda', 'Belgium': 'Bélgica', 'Croatia': 'Croácia', 'Uruguay': 'Uruguai',
+  'Colombia': 'Colômbia', 'Mexico': 'México', 'United States': 'Estados Unidos', 'Japan': 'Japão',
+  'Morocco': 'Marrocos', 'Switzerland': 'Suíça', 'Egypt': 'Egito', 'Norway': 'Noruega',
+  'Denmark': 'Dinamarca', 'Poland': 'Polônia', 'Serbia': 'Sérvia', 'Sweden': 'Suécia',
+  'Ecuador': 'Equador', 'Peru': 'Peru', 'Chile': 'Chile', 'Paraguay': 'Paraguai',
+  'Australia': 'Austrália', 'South Korea': 'Coreia do Sul', 'Saudi Arabia': 'Arábia Saudita',
+  'Canada': 'Canadá', 'Senegal': 'Senegal', 'Ghana': 'Gana', 'Cameroon': 'Camarões',
+  'Tunisia': 'Tunísia', 'Iran': 'Irã', 'Qatar': 'Catar', 'Wales': 'País de Gales',
+  'Scotland': 'Escócia', 'Turkey': 'Turquia', 'Greece': 'Grécia', 'Austria': 'Áustria',
+};
+// Clube da Série A → nome canônico (Flamengo, Atlético-MG...). Senão, tradução de seleção. Senão, o nome cru.
+function traduzTime(nome) {
+  if (times.ehSerieA(nome)) return times.canonico(nome);
+  return TIMES[nome] || nome;
+}
+
+// ── Normalização de status ──
+// API-Football usa códigos curtos; convertemos pro padrão do football-data
+// (que o resto do bot já entende).
+const AF_STATUS = {
+  TBD: 'SCHEDULED', NS: 'TIMED',
+  '1H': 'IN_PLAY', '2H': 'IN_PLAY', ET: 'IN_PLAY', BT: 'IN_PLAY', P: 'IN_PLAY', LIVE: 'IN_PLAY',
+  HT: 'PAUSED',
+  FT: 'FINISHED', AET: 'FINISHED', PEN: 'FINISHED',
+  SUSP: 'SUSPENDED', INT: 'SUSPENDED',
+  PST: 'POSTPONED', CANC: 'CANCELLED', ABD: 'CANCELLED', AWD: 'FINISHED', WO: 'FINISHED',
+};
+function statusAF(short) { return AF_STATUS[short] || 'SCHEDULED'; }
+
+// ── Mapeadores: cada fonte → o mesmo formato interno ──
+function mapFD(m) {
+  const pen = m.score?.penalties || {};
+  const temPen = pen.home != null && pen.away != null;
+  const regHome = m.score?.regularTime?.home ?? m.score?.fullTime?.home;
+  const regAway = m.score?.regularTime?.away ?? m.score?.fullTime?.away;
+  return {
+    id: String(m.id),
+    casa: traduzTime(m.homeTeam?.name),
+    fora: traduzTime(m.awayTeam?.name),
+    hora: horaSaoPaulo(m.utcDate),
     data: dataISOSaoPaulo(m.utcDate),
-    dataLocal: new Date(m.utcDate).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+    dataLocal: dataLocalBR(m.utcDate),
     status: m.status,
-    golsCasa: temPenaltis ? regHome : m.score.fullTime.home,
-    golsFora: temPenaltis ? regAway : m.score.fullTime.away,
-    penaltisCasa: temPenaltis ? pen.home : null,
-    penaltisFora: temPenaltis ? pen.away : null,
-    fase: m.stage,
-    };
-  }).filter(j =>
+    golsCasa: temPen ? regHome : (m.score?.fullTime?.home ?? null),
+    golsFora: temPen ? regAway : (m.score?.fullTime?.away ?? null),
+    penaltisCasa: temPen ? pen.home : null,
+    penaltisFora: temPen ? pen.away : null,
+    fase: m.stage || null,
+    competicao: 'Brasileirão Série A',
+    fonte: 'fd',
+  };
+}
+
+function mapAF(f) {
+  const pen = f.score?.penalty || {};
+  const temPen = pen.home != null && pen.away != null;
+  const utc = f.fixture?.date;
+  return {
+    id: 'af_' + f.fixture?.id, // prefixo: nunca colide com os IDs do football-data
+    casa: traduzTime(f.teams?.home?.name),
+    fora: traduzTime(f.teams?.away?.name),
+    hora: horaSaoPaulo(utc),
+    data: dataISOSaoPaulo(utc),
+    dataLocal: dataLocalBR(utc),
+    status: statusAF(f.fixture?.status?.short),
+    golsCasa: temPen ? (f.score?.fulltime?.home ?? null) : (f.goals?.home ?? null),
+    golsFora: temPen ? (f.score?.fulltime?.away ?? null) : (f.goals?.away ?? null),
+    penaltisCasa: temPen ? pen.home : null,
+    penaltisFora: temPen ? pen.away : null,
+    minuto: f.fixture?.status?.elapsed || null,
+    fase: f.league?.round || null,
+    competicao: f.league?.name || 'Outra competição',
+    fonte: 'af',
+  };
+}
+
+// ── Dedup: se o mesmo confronto/data já veio do football-data, ignora o da API-Football ──
+function chaveJogo(j) {
+  return `${j.data}|${times.norm(j.casa)}|${times.norm(j.fora)}`;
+}
+function mesclar(listaFD, listaAF) {
+  const vistos = new Set(listaFD.map(chaveJogo));
+  const extras = listaAF.filter(j => !vistos.has(chaveJogo(j)));
+  return [...listaFD, ...extras];
+}
+
+// ═══════════════ FUNÇÕES PÚBLICAS ═══════════════
+
+// Jogos do dia: Brasileirão (FD) + qualquer outro jogo dos nossos clubes (AF)
+async function jogosDoDia() {
+  const ontem  = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const amanha = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  const hojeLocal = dataLocalBR(new Date().toISOString());
+
+  // FONTE 1 — Brasileirão
+  const fd = await get(`${BASE}/competitions/${LIGA}/matches?dateFrom=${ontem}&dateTo=${amanha}`);
+  let listaFD = (fd?.matches || []).map(mapFD);
+
+  // FONTE 2 — 1 requisição traz o dia inteiro do mundo; filtramos nossos clubes
+  let listaAF = [];
+  const afHoje = await getAF(`/fixtures?date=${hojeISO()}`);
+  if (afHoje) {
+    listaAF = afHoje
+      .filter(f => times.jogoInteressa(f.teams?.home?.name, f.teams?.away?.name))
+      .map(mapAF);
+  }
+
+  const todos = mesclar(listaFD, listaAF);
+  // Só os de hoje (fuso SP) ou que estão rolando agora
+  return todos.filter(j =>
     j.dataLocal === hojeLocal ||
-    j.status === 'IN_PLAY' || j.status === 'PAUSED' ||
-    (j.golsCasa !== null && j.status !== 'FINISHED')
+    j.status === 'IN_PLAY' || j.status === 'PAUSED'
   );
 }
 
+// Jogos ao vivo agora
 async function jogosAoVivo() {
-  // Busca IN_PLAY e PAUSED separadamente (a API recusa vírgula no status)
+  // FONTE 1 — Brasileirão (a API recusa vírgula no status, então busca separado)
   const [d1, d2] = await Promise.all([
-    get(`${BASE}/competitions/WC/matches?status=IN_PLAY`),
-    get(`${BASE}/competitions/WC/matches?status=PAUSED`),
+    get(`${BASE}/competitions/${LIGA}/matches?status=IN_PLAY`),
+    get(`${BASE}/competitions/${LIGA}/matches?status=PAUSED`),
   ]);
-  const matches = [...(d1?.matches || []), ...(d2?.matches || [])];
-  if (!matches.length) return [];
-  return matches.map(m => ({
-    id: m.id,
-    casa: traduzTime(m.homeTeam.name),
-    fora: traduzTime(m.awayTeam.name),
-    golsCasa: m.score.fullTime.home ?? m.score.halfTime.home ?? 0,
-    golsFora: m.score.fullTime.away ?? m.score.halfTime.away ?? 0,
+  const listaFD = [...(d1?.matches || []), ...(d2?.matches || [])].map(m => ({
+    ...mapFD(m),
+    golsCasa: m.score?.fullTime?.home ?? m.score?.halfTime?.home ?? 0,
+    golsFora: m.score?.fullTime?.away ?? m.score?.halfTime?.away ?? 0,
     minuto: m.minute || '?',
-    status: m.status,
   }));
+
+  // FONTE 2 — 1 requisição traz TODOS os jogos ao vivo do mundo; filtramos os nossos
+  let listaAF = [];
+  const afLive = await getAF('/fixtures?live=all');
+  if (afLive) {
+    listaAF = afLive
+      .filter(f => times.jogoInteressa(f.teams?.home?.name, f.teams?.away?.name))
+      .map(f => ({ ...mapAF(f), golsCasa: f.goals?.home ?? 0, golsFora: f.goals?.away ?? 0, minuto: f.fixture?.status?.elapsed || '?' }));
+  }
+
+  return mesclar(listaFD, listaAF);
 }
 
+// Próximos jogos (agendados) — usado pelo bolão de amanhã e pelo /proximos
+async function proximosJogos() {
+  // FONTE 1 — Brasileirão agendado
+  const fd = await get(`${BASE}/competitions/${LIGA}/matches?status=SCHEDULED,TIMED`);
+  const listaFD = (fd?.matches || []).slice(0, 30).map(mapFD);
+
+  // FONTE 2 — próximos dias (1 req por dia consultado; 2 dias = 2 reqs)
+  let listaAF = [];
+  for (let d = 1; d <= 2; d++) {
+    const dia = new Date(Date.now() + d * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    const r = await getAF(`/fixtures?date=${dia}`);
+    if (r) {
+      listaAF.push(...r
+        .filter(f => times.jogoInteressa(f.teams?.home?.name, f.teams?.away?.name))
+        .map(mapAF)
+        .filter(j => ['SCHEDULED', 'TIMED'].includes(j.status)));
+    }
+  }
+
+  return mesclar(listaFD, listaAF).sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
+}
+
+// Tabela do Brasileirão (football-data)
 async function tabela() {
-  const data = await get(`${BASE}/competitions/WC/standings`);
+  const data = await get(`${BASE}/competitions/${LIGA}/standings`);
   if (!data || !data.standings) return [];
   return data.standings
     .filter(g => g.type === 'TOTAL')
     .map(grupo => ({
-      grupo: grupo.group || 'Grupo',
-      times: grupo.table.map(t => ({
+      grupo: grupo.group || 'Classificação',
+      times: (grupo.table || []).map(t => ({
         pos: t.position,
         time: traduzTime(t.team.name),
         pts: t.points,
@@ -150,36 +303,24 @@ async function tabela() {
         d: t.lost,
         sg: t.goalDifference,
         gp: t.goalsFor,
-      }))
+      })),
     }));
 }
 
+// Artilheiros do Brasileirão (football-data)
 async function artilheiros() {
-  const data = await get(`${BASE}/competitions/WC/scorers?limit=10`);
+  const data = await get(`${BASE}/competitions/${LIGA}/scorers?limit=10`);
   if (!data || !data.scorers) return [];
   return data.scorers.map((s, i) => ({
     pos: i + 1,
     nome: s.player.name,
     time: traduzTime(s.team.name),
     gols: s.goals || 0,
-    assistencias: s.assists || 0,
+    assist: s.assists || 0,
   }));
 }
 
-async function proximosJogos() {
-  const data = await get(`${BASE}/competitions/WC/matches?status=SCHEDULED,TIMED`);
-  if (!data || !data.matches) return [];
-  return data.matches.slice(0, 15).map(m => ({
-    id: m.id,
-    casa: traduzTime(m.homeTeam.name),
-    fora: traduzTime(m.awayTeam.name),
-    data: dataISOSaoPaulo(m.utcDate), // ISO AAAA-MM-DD pro Supabase (fuso SP)
-    dataBR: new Date(m.utcDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' }),
-    hora: new Date(m.utcDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }),
-    status: m.status,
-    golsCasa: m.score.fullTime.home,
-    golsFora: m.score.fullTime.away,
-  }));
-}
-
-module.exports = { jogosDoDia, jogosAoVivo, tabela, artilheiros, proximosJogos, traduzTime };
+module.exports = {
+  jogosDoDia, jogosAoVivo, tabela, artilheiros, proximosJogos,
+  traduzTime, dataISOSaoPaulo, afStatusQuota, LIGA,
+};
