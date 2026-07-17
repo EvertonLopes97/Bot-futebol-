@@ -25,9 +25,22 @@ const headers = {
   'Accept-Encoding': 'identity', // resposta SEM compressão (evita "Premature close")
 };
 
-// ── FONTE 2: API-Football (RapidAPI) ──
-const AF_HOST = process.env.APIFOOTBALL_HOST || 'api-football-v1.p.rapidapi.com';
-const AF_KEY  = process.env.RAPIDAPI_KEY;
+// ── FONTE 2: API-Football ──
+// Dois caminhos (o bot escolhe sozinho):
+//   A) DIRETO em api-sports.io  → APIFOOTBALL_KEY  (recomendado: grátis, sem cartão, todos endpoints)
+//      Registre em https://dashboard.api-football.com → header x-apisports-key
+//   B) via RapidAPI            → RAPIDAPI_KEY      (precisa estar INSCRITO na API-Football lá)
+const AF_DIRETO_KEY = process.env.APIFOOTBALL_KEY;              // caminho A
+const AF_RAPID_KEY  = process.env.RAPIDAPI_KEY;                 // caminho B
+const AF_RAPID_HOST = process.env.APIFOOTBALL_HOST || 'api-football-v1.p.rapidapi.com';
+const AF_MODO = AF_DIRETO_KEY ? 'direto' : (AF_RAPID_KEY ? 'rapidapi' : 'off');
+const AF_BASE = AF_DIRETO_KEY
+  ? 'https://v3.football.api-sports.io'
+  : `https://${AF_RAPID_HOST}/v3`;
+const AF_HEADERS = AF_DIRETO_KEY
+  ? { 'x-apisports-key': AF_DIRETO_KEY }
+  : { 'x-rapidapi-key': AF_RAPID_KEY, 'x-rapidapi-host': AF_RAPID_HOST };
+
 const AF_QUOTA_DIA = parseInt(process.env.AF_QUOTA_DIA || '90'); // margem sob os 100/dia
 const AF_LIGADA = (process.env.AF_LIGADA || 'true') === 'true';
 
@@ -41,13 +54,13 @@ function afResetSeNovoDia() {
 }
 function afPodeUsar() {
   afResetSeNovoDia();
-  if (!AF_LIGADA || !AF_KEY) return false;
+  if (!AF_LIGADA || AF_MODO === 'off') return false;
   if (afPausaAte && Date.now() < afPausaAte) return false;
   return afUsadas < AF_QUOTA_DIA;
 }
 function afStatusQuota() {
   afResetSeNovoDia();
-  return { usadas: afUsadas, quota: AF_QUOTA_DIA, restantes: AF_QUOTA_DIA - afUsadas, api: 'API-Football (RapidAPI)' };
+  return { usadas: afUsadas, quota: AF_QUOTA_DIA, restantes: AF_QUOTA_DIA - afUsadas, modo: AF_MODO, api: 'API-Football' };
 }
 
 // Converte uma data UTC pra AAAA-MM-DD no fuso de São Paulo (evita jogo de 21h virar "amanhã")
@@ -89,20 +102,38 @@ async function get(url, tentativa = 1) {
 }
 
 // ── GET API-Football (com controle de quota) ──
+// Diagnóstico: mostra plano e cota REAL. Não consome a cota diária.
+async function afDiagnostico() {
+  if (AF_MODO === 'off') return { ok: false, erro: 'Sem chave (defina APIFOOTBALL_KEY ou RAPIDAPI_KEY).' };
+  try {
+    const res = await fetchFn(`${AF_BASE}/status`, { headers: AF_HEADERS });
+    if (!res.ok) return { ok: false, modo: AF_MODO, http: res.status,
+      erro: res.status === 403 ? 'SEM PERMISSÃO nessa API (não é cota)' : 'falhou' };
+    const j = await res.json();
+    const r = j.response || {};
+    return { ok: true, modo: AF_MODO, plano: r.subscription?.plan, ativo: r.subscription?.active,
+             usadas: r.requests?.current, limite: r.requests?.limit_day };
+  } catch (e) { return { ok: false, modo: AF_MODO, erro: e.message }; }
+}
+
 async function getAF(path) {
   if (!afPodeUsar()) return null;
   try {
     afUsadas++;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
-    const res = await fetchFn(`https://${AF_HOST}/v3${path}`, {
-      headers: { 'x-rapidapi-key': AF_KEY, 'x-rapidapi-host': AF_HOST },
-      signal: controller.signal,
-    });
+    const res = await fetchFn(`${AF_BASE}${path}`, { headers: AF_HEADERS, signal: controller.signal });
     clearTimeout(timeout);
+    if (res.status === 403) {
+      afPausaAte = Date.now() + 60 * 60 * 1000; // 403 é PERMISSÃO, não cota: insistir não adianta
+      console.error('[API-AF] ❌ 403 = SEM PERMISSÃO (não é cota).' + (AF_MODO === 'rapidapi'
+        ? ' Sua RAPIDAPI_KEY não está inscrita na API-Football. MAIS FÁCIL: registre grátis em dashboard.api-football.com e ponha a chave em APIFOOTBALL_KEY.'
+        : ' Confira a APIFOOTBALL_KEY no dashboard.api-football.com.'));
+      return null;
+    }
     if (res.status === 429) {
-      afPausaAte = Date.now() + 30 * 60 * 1000; // pausa 30 min
-      console.warn('[API-AF] 429 — cota estourada. Pausando 30 min.');
+      afPausaAte = Date.now() + 30 * 60 * 1000;
+      console.warn('[API-AF] 429 — cota diária estourada. Pausando 30 min.');
       return null;
     }
     if (!res.ok) { console.error(`[API-AF] HTTP ${res.status} em ${path}`); return null; }
@@ -170,6 +201,7 @@ function mapFD(m) {
     penaltisCasa: temPen ? pen.home : null,
     penaltisFora: temPen ? pen.away : null,
     fase: m.stage || null,
+    rodada: m.matchday ?? null, // nº da rodada do Brasileirão (1-38). Copa não tem.
     competicao: 'Brasileirão Série A',
     fonte: 'fd',
   };
@@ -193,6 +225,7 @@ function mapAF(f) {
     penaltisFora: temPen ? pen.away : null,
     minuto: f.fixture?.status?.elapsed || null,
     fase: f.league?.round || null,
+    rodada: null, // copa/mata-mata não tem rodada de pontos corridos
     competicao: f.league?.name || 'Outra competição',
     fonte: 'af',
   };
@@ -322,5 +355,5 @@ async function artilheiros() {
 
 module.exports = {
   jogosDoDia, jogosAoVivo, tabela, artilheiros, proximosJogos,
-  traduzTime, dataISOSaoPaulo, afStatusQuota, LIGA,
+  traduzTime, dataISOSaoPaulo, afStatusQuota, afDiagnostico, LIGA,
 };

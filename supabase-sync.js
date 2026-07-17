@@ -70,6 +70,8 @@ async function syncJogos(jogos) {
         status: j.status || 'TIMED',
         hora: j.hora || null,
         data: (j.data || hoje),
+        rodada: (j.rodada ?? null),
+        competicao: (j.competicao || null),
         atualizado_em: new Date().toISOString(),
       }));
     if (!linhas.length) { console.log('[SYNC] ⚠️ nenhum jogo válido pra enviar (todos sem nome).'); return; }
@@ -136,25 +138,32 @@ async function apurarPalpitesSite(jogoApiId, golsCasa, golsFora) {
 }
 
 
-async function definirBolaoExato(jogo, dataAlvo) {
+// Chave única do bolão: UMA POR COMPETIÇÃO + RODADA.
+// Brasileirão 15ª rodada → "Brasileirão Série A|R15"
+// Libertadores quartas   → "Copa Libertadores|Quarter-finals"
+function chaveBolao(jogo) {
+  const comp = jogo.competicao || 'Outra';
+  const ident = jogo.rodada != null ? `R${jogo.rodada}` : (jogo.fase || jogo.data);
+  return `${comp}|${ident}`;
+}
+
+async function definirBolaoRodada(jogo) {
   if (!supabase) return null;
   try {
-    const data = dataAlvo || hojeSP();
-    // TRAVA DE SEGURANÇA: se o jogo tem data própria e ela NÃO bate com a data alvo,
-    // não grava (evita salvar o jogo de amanhã no lugar do de hoje).
-    if (jogo.data && jogo.data !== data) {
-      console.log(`[EXATO] ⚠️ ignorado: jogo ${jogo.casa} x ${jogo.fora} é de ${jogo.data}, mas tentou gravar como ${data}`);
-      return null;
-    }
+    const chave = chaveBolao(jogo);
     const { data: resultado, error } = await supabase.from('bolao_exato').upsert({
-      data,
+      chave,
+      competicao: jogo.competicao || null,
+      rodada: jogo.rodada ?? null,
+      fase: jogo.fase || null,
+      data: jogo.data,
+      hora: jogo.hora || null,
       jogo_api_id: String(jogo.id),
       time_casa: jogo.casa,
       time_fora: jogo.fora,
-      hora: jogo.hora || null,
-    }, { onConflict: 'data' }).select().single();
+    }, { onConflict: 'chave' }).select().single();
     if (error) { console.error('[EXATO] ❌ definir:', error.message); return null; }
-    console.log(`[EXATO] ✅ bolão ${data}: ${jogo.casa} x ${jogo.fora}`);
+    console.log(`[EXATO] ✅ bolão [${chave}]: ${jogo.casa} x ${jogo.fora} — ${jogo.data} ${jogo.hora || ''}`);
     return resultado;
   } catch (e) { console.error('[EXATO] ❌ exceção:', e.message); return null; }
 }
@@ -251,7 +260,7 @@ async function setLiveStatus({ ativa, plataforma, canal }) {
   } catch (e) { console.error('[SYNC] ❌ live exceção:', e.message); }
 }
 
-module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoExato, salvarPalpiteExato, apurarBolaoExato, apurarPalpitesSite, salvarGreen, salvarOddsDoDia, marcarGreen, setLiveStatus };
+module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoRodada, salvarPalpiteExato, apurarBolaoExato, apurarPalpitesSite, salvarGreen, salvarOddsDoDia, marcarGreen, setLiveStatus };
 
 // Salva as odds do dia no Supabase (ficam ativas até meia-noite)
 async function salvarOddsDoDia(odds) {

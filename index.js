@@ -191,7 +191,7 @@ async function agendaDoDia() {
   if (!jogos.length) {
     ch.send('📅 **Agenda de hoje:** sem jogos dos nossos clubes hoje. Volte amanhã! ⚽').catch(() => {});
     // mesmo sem jogo hoje, tenta criar o bolão de AMANHÃ (pra palpitar na véspera)
-    await definirBolaoAmanha();
+    await definirBoloesDaRodada();
     return;
   }
   ch.send({ embeds: [embedJogosDoDia(jogos)] }).catch(e => console.error('Envio agenda:', e.message));
@@ -199,52 +199,55 @@ async function agendaDoDia() {
   wa.enviar(`⚽ *JOGOS DE HOJE*\n${lista}\n\n👉 Palpita agora: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
   console.log(`[AGENDA] disparada com ${jogos.length} jogos`);
 
-  // ── BOLÃO EXATO DO DIA: escolhe o jogo mais popular ENTRE OS DE HOJE ──
-  try {
-    const hojeSP = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
-    // filtra explicitamente só jogos cuja data é hoje (evita pegar jogo de amanhã por engano)
-    const jogosHoje = jogos.filter(j => j.data === hojeSP);
-    const ordenados = jogosHoje
-      .map(j => ({ ...j, score: dica.relevanciaJogo(j) }))
-      .sort((a, b) => b.score - a.score);
-    const escolhido = ordenados[0];
-    if (escolhido) {
-      const bolao = await sync.definirBolaoExato(escolhido, hojeSP);
-      if (bolao) {
-        servidor.setEstado('bolaoExato', bolao);
-        const msg = `🎯 **BOLÃO EXATO DO DIA!**\n\n**${escolhido.casa} x ${escolhido.fora}**\n\nCrave o **placar exato** e vire o 👑 Rei do Exato! Use **/exato** pra palpitar.`;
-        ch.send(msg).catch(() => {});
-        wa.enviar(`🎯 *BOLÃO EXATO DO DIA!*\n\n${escolhido.casa} x ${escolhido.fora}\n\nCrave em: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
-      }
-    } else {
-      console.log('[EXATO] nenhum jogo de hoje pra definir bolão do dia.');
-    }
-  } catch (e) { console.error('[EXATO] erro ao definir bolão:', e.message); }
+  // ── BOLÕES DA RODADA: um por competição (Brasileirão, Liberta, Copa do Brasil...) ──
+  const boloes = await definirBoloesDaRodada();
+  for (const b of boloes) {
+    const titulo = b.rodada != null ? `${b.rodada}ª RODADA — ${b.competicao}` : `${b.competicao}${b.fase ? ' — ' + b.fase : ''}`;
+    ch.send(`🎯 **BOLÃO DA RODADA!**\n\n**${titulo}**\n**${b.time_casa} x ${b.time_fora}** — ${b.data} ${b.hora || ''}\n\nCrave o **placar exato** e vire o 👑 Rei do Exato! Use **/exato** pra palpitar.`).catch(() => {});
+    wa.enviar(`🎯 *BOLÃO DA RODADA!*\n\n${titulo}\n${b.time_casa} x ${b.time_fora}\n\nCrave em: ${LINK_SITE}/dashboard.html\n📱 Discord: ${LINK_DISCORD}`);
+  }
+  if (boloes[0]) servidor.setEstado('bolaoExato', boloes[0]);
 
-  // ── BOLÃO EXATO DE AMANHÃ (pra palpitar na véspera) ──
-  await definirBolaoAmanha();
 }
 
-// Cria o bolão exato de amanhã com o mesmo critério (jogo mais relevante).
-// Roda mesmo em dias sem jogo hoje.
-async function definirBolaoAmanha() {
+// Define UM bolão por competição, sempre da rodada MAIS PRÓXIMA de cada uma.
+// Brasileirão → jogo mais relevante da rodada atual.
+// Libertadores/Copa do Brasil → jogo mais relevante da fase atual.
+// Só entram jogos que AINDA NÃO começaram (dá tempo de palpitar).
+async function definirBoloesDaRodada() {
   try {
-    const proximos = await api.proximosJogos();
-    const amanha = new Date(Date.now() + 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
-    const jogosAmanha = (proximos || []).filter(j => j.data === amanha);
-    if (jogosAmanha.length) {
-      const ordenadosAmanha = jogosAmanha
-        .map(j => ({ ...j, score: dica.relevanciaJogo(j) }))
-        .sort((a, b) => b.score - a.score);
-      const escolhidoAmanha = ordenadosAmanha[0];
-      if (escolhidoAmanha) {
-        const bolaoAmanha = await sync.definirBolaoExato(escolhidoAmanha, amanha);
-        if (bolaoAmanha) console.log(`[EXATO] ✅ bolão de AMANHÃ definido: ${escolhidoAmanha.casa} x ${escolhidoAmanha.fora}`);
-      }
-    } else {
-      console.log('[EXATO] nenhum jogo de amanhã encontrado pra definir bolão antecipado.');
+    const [deHoje, proximos] = await Promise.all([api.jogosDoDia(), api.proximosJogos()]);
+    const abertos = [...deHoje, ...proximos].filter(j => ['SCHEDULED', 'TIMED'].includes(j.status));
+    if (!abertos.length) { console.log('[EXATO] nenhum jogo aberto pra bolão.'); return []; }
+
+    // agrupa por competição + rodada/fase
+    const grupos = {};
+    for (const j of abertos) {
+      const comp = j.competicao || 'Outra';
+      const ident = j.rodada != null ? `R${j.rodada}` : (j.fase || j.data);
+      const k = `${comp}|${ident}`;
+      (grupos[k] = grupos[k] || []).push(j);
     }
-  } catch (e) { console.error('[EXATO] erro ao definir bolão de amanhã:', e.message); }
+    // por competição, fica só com a rodada mais próxima (menor data)
+    const porComp = {};
+    for (const [k, jogos] of Object.entries(grupos)) {
+      const comp = k.split('|')[0];
+      const dataMin = jogos.map(j => j.data).sort()[0];
+      if (!porComp[comp] || dataMin < porComp[comp].dataMin) porComp[comp] = { jogos, dataMin };
+    }
+
+    const criados = [];
+    for (const { jogos } of Object.values(porComp)) {
+      const escolhido = jogos
+        .map(j => ({ ...j, score: dica.relevanciaJogo(j) }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (!escolhido) continue;
+      const b = await sync.definirBolaoRodada(escolhido);
+      if (b) criados.push(b);
+    }
+    if (!criados.length) console.log('[EXATO] nenhum bolão criado.');
+    return criados;
+  } catch (e) { console.error('[EXATO] erro ao definir bolões da rodada:', e.message); return []; }
 }
 
 // Verificador que roda a cada minuto e dispara as tarefas no horário certo de Brasília
