@@ -138,6 +138,20 @@ async function apurarPalpitesSite(jogoApiId, golsCasa, golsFora) {
 }
 
 
+// Guarda a rodada ATUAL da liga (vem da API) pro site saber qual mostrar.
+// Sem isso o site teria que adivinhar — e erraria por causa dos jogos adiados.
+async function salvarRodadaAtual(rodada, competicao = 'Brasileirão Série A') {
+  if (!supabase || rodada == null) return;
+  try {
+    const { error } = await supabase.from('hublab_dados').upsert({
+      chave: 'rodada_atual',
+      dados: { rodada, competicao, atualizado_em: new Date().toISOString() },
+    }, { onConflict: 'chave' });
+    if (error) console.error('[RODADA] ❌', error.message);
+    else console.log(`[RODADA] ✅ rodada atual da liga: ${rodada}`);
+  } catch (e) { console.error('[RODADA] ❌', e.message); }
+}
+
 // Chave única do bolão: UMA POR COMPETIÇÃO + RODADA.
 // Brasileirão 15ª rodada → "Brasileirão Série A|R15"
 // Libertadores quartas   → "Copa Libertadores|Quarter-finals"
@@ -260,7 +274,7 @@ async function setLiveStatus({ ativa, plataforma, canal }) {
   } catch (e) { console.error('[SYNC] ❌ live exceção:', e.message); }
 }
 
-module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoRodada, salvarPalpiteExato, apurarBolaoExato, apurarPalpitesSite, salvarGreen, salvarOddsDoDia, marcarGreen, setLiveStatus };
+module.exports = { init, syncRanking, syncJogos, syncPalpite, definirBolaoRodada, salvarRodadaAtual, salvarPalpiteExato, apurarBolaoExato, apurarPalpitesSite, salvarGreen, salvarOddsDoDia, marcarGreen, setLiveStatus };
 
 // Salva as odds do dia no Supabase (ficam ativas até meia-noite)
 async function salvarOddsDoDia(odds) {

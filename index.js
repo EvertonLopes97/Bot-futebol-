@@ -216,11 +216,15 @@ async function agendaDoDia() {
 // Só entram jogos que AINDA NÃO começaram (dá tempo de palpitar).
 async function definirBoloesDaRodada() {
   try {
+    // 1) Qual é a rodada ATUAL do Brasileirão? Pergunta pra API (não adivinha).
+    const rodadaLiga = await api.rodadaAtualLiga();
+    if (rodadaLiga) await sync.salvarRodadaAtual(rodadaLiga);
+
     const [deHoje, proximos] = await Promise.all([api.jogosDoDia(), api.proximosJogos()]);
     const abertos = [...deHoje, ...proximos].filter(j => ['SCHEDULED', 'TIMED'].includes(j.status));
     if (!abertos.length) { console.log('[EXATO] nenhum jogo aberto pra bolão.'); return []; }
 
-    // agrupa por competição + rodada/fase
+    // 2) Agrupa por competição + rodada/fase
     const grupos = {};
     for (const j of abertos) {
       const comp = j.competicao || 'Outra';
@@ -228,14 +232,24 @@ async function definirBoloesDaRodada() {
       const k = `${comp}|${ident}`;
       (grupos[k] = grupos[k] || []).push(j);
     }
-    // por competição, fica só com a rodada mais próxima (menor data)
+
+    // 3) Escolhe UM grupo por competição:
+    //    - Brasileirão: o grupo da RODADA ATUAL (ignora jogo atrasado de rodada antiga)
+    //    - Copas: o de data mais próxima
     const porComp = {};
     for (const [k, jogos] of Object.entries(grupos)) {
       const comp = k.split('|')[0];
+      const ident = k.split('|')[1];
       const dataMin = jogos.map(j => j.data).sort()[0];
-      if (!porComp[comp] || dataMin < porComp[comp].dataMin) porComp[comp] = { jogos, dataMin };
+      const ehRodadaAtual = rodadaLiga != null && ident === `R${rodadaLiga}`;
+      const atual = porComp[comp];
+      if (!atual) { porComp[comp] = { jogos, dataMin, ehRodadaAtual }; continue; }
+      // a rodada oficial sempre ganha; senão, decide pela data mais próxima
+      if (ehRodadaAtual && !atual.ehRodadaAtual) porComp[comp] = { jogos, dataMin, ehRodadaAtual };
+      else if (ehRodadaAtual === atual.ehRodadaAtual && dataMin < atual.dataMin) porComp[comp] = { jogos, dataMin, ehRodadaAtual };
     }
 
+    // 4) Em cada grupo, o jogo mais relevante vira o bolão
     const criados = [];
     for (const { jogos } of Object.values(porComp)) {
       const escolhido = jogos

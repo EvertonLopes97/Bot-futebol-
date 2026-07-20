@@ -318,6 +318,15 @@ async function proximosJogos() {
   return mesclar(listaFD, listaAF).sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
 }
 
+// Rodada ATUAL do Brasileirão, direto da API (fonte da verdade).
+// Não dá pra inferir por "menor rodada em aberto": jogos ADIADOS de rodadas antigas
+// ficam eternamente em aberto e envenenariam a conta.
+async function rodadaAtualLiga() {
+  const d = await get(`${BASE}/competitions/${LIGA}`);
+  const r = d?.currentSeason?.currentMatchday;
+  return (typeof r === 'number' && r > 0) ? r : null;
+}
+
 // Tabela do Brasileirão (football-data)
 async function tabela() {
   const data = await get(`${BASE}/competitions/${LIGA}/standings`);
@@ -355,5 +364,5 @@ async function artilheiros() {
 
 module.exports = {
   jogosDoDia, jogosAoVivo, tabela, artilheiros, proximosJogos,
-  traduzTime, dataISOSaoPaulo, afStatusQuota, afDiagnostico, LIGA,
+  traduzTime, dataISOSaoPaulo, afStatusQuota, afDiagnostico, rodadaAtualLiga, LIGA,
 };
