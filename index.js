@@ -221,8 +221,17 @@ async function definirBoloesDaRodada() {
     if (rodadaLiga) await sync.salvarRodadaAtual(rodadaLiga);
 
     const [deHoje, proximos] = await Promise.all([api.jogosDoDia(), api.proximosJogos()]);
-    const abertos = [...deHoje, ...proximos].filter(j => ['SCHEDULED', 'TIMED'].includes(j.status));
+    let abertos = [...deHoje, ...proximos].filter(j => ['SCHEDULED', 'TIMED'].includes(j.status));
     if (!abertos.length) { console.log('[EXATO] nenhum jogo aberto pra bolão.'); return []; }
+
+    // Remove jogos ATRASADOS (rodada 2+ atrás da atual) — eles não devem virar o bolão da rodada.
+    if (rodadaLiga != null) {
+      abertos = abertos.filter(j => j.rodada == null || Number(j.rodada) >= rodadaLiga - 1);
+    }
+
+    // Dedup por jogo (o mesmo jogo pode vir de jogosDoDia e proximosJogos)
+    const vistos = new Set();
+    abertos = abertos.filter(j => { if (vistos.has(j.id)) return false; vistos.add(j.id); return true; });
 
     // 2) Agrupa por competição + rodada/fase
     const grupos = {};
@@ -233,20 +242,15 @@ async function definirBoloesDaRodada() {
       (grupos[k] = grupos[k] || []).push(j);
     }
 
-    // 3) Escolhe UM grupo por competição:
-    //    - Brasileirão: o grupo da RODADA ATUAL (ignora jogo atrasado de rodada antiga)
-    //    - Copas: o de data mais próxima
+    // 3) Escolhe UM grupo por competição = a rodada/fase que vai ser jogada PRIMEIRO
+    //    (menor data entre os jogos abertos). Assim o bolão é sempre do próximo jogo
+    //    palpitável — resolve a sobreposição rodada 19/20 do Brasileirão.
     const porComp = {};
     for (const [k, jogos] of Object.entries(grupos)) {
       const comp = k.split('|')[0];
-      const ident = k.split('|')[1];
       const dataMin = jogos.map(j => j.data).sort()[0];
-      const ehRodadaAtual = rodadaLiga != null && ident === `R${rodadaLiga}`;
       const atual = porComp[comp];
-      if (!atual) { porComp[comp] = { jogos, dataMin, ehRodadaAtual }; continue; }
-      // a rodada oficial sempre ganha; senão, decide pela data mais próxima
-      if (ehRodadaAtual && !atual.ehRodadaAtual) porComp[comp] = { jogos, dataMin, ehRodadaAtual };
-      else if (ehRodadaAtual === atual.ehRodadaAtual && dataMin < atual.dataMin) porComp[comp] = { jogos, dataMin, ehRodadaAtual };
+      if (!atual || dataMin < atual.dataMin) porComp[comp] = { jogos, dataMin };
     }
 
     // 4) Em cada grupo, o jogo mais relevante vira o bolão
