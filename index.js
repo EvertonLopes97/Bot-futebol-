@@ -295,6 +295,18 @@ setInterval(async () => {
     console.log('[AGENDA] 7h — disparando agenda do dia');
     await agendaDoDia();
     await entregaOdds('Odds do dia ⚽');
+
+    // Segunda-feira: atualiza os elencos do Jogo da Memória (fotos incluídas)
+    const diaSemana = new Date().toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/Sao_Paulo' });
+    if (diaSemana === 'Mon' && !jaFez('elencos07')) {
+      marcar('elencos07');
+      console.log('[AGENDA] segunda 7h — atualizando elencos do Jogo da Memória');
+      try {
+        const { popularJogadores } = require('./popular-jogadores.js');
+        const r = await popularJogadores((msg) => console.log(msg));
+        if (r.ok) console.log(`[JOGADORES] refresh semanal: ${r.jogadores} jogadores (${r.comFoto} c/ foto)`);
+      } catch (e) { console.error('[JOGADORES] refresh semanal falhou:', e.message); }
+    }
   }
   // 20:00 → odds pra amanhã
   if (h === 20 && m === 0 && !jaFez('odds20')) {
