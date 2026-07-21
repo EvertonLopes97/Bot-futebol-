@@ -753,6 +753,7 @@ const comandos = [
   new SlashCommandBuilder().setName('dica').setDescription('Dica do dia: favorito + múltipla + melhor casa (+18)'),
   new SlashCommandBuilder().setName('agenda').setDescription('(Staff) Dispara a agenda do dia agora (teste)'),
   new SlashCommandBuilder().setName('fontes').setDescription('(Staff) Status das APIs e quota de backup'),
+  new SlashCommandBuilder().setName('popularjogadores').setDescription('(Staff) Atualiza os elencos dos clubes pro Jogo da Memória'),
   new SlashCommandBuilder().setName('multipla').setDescription('Múltiplas dos sonhos prontas dos jogos mais hypados (+18)'),
   new SlashCommandBuilder().setName('ganhador').setDescription('(Staff) Marca o ganhador do dia (+50 XP)')
     .addUserOption(o => o.setName('membro').setDescription('Ganhador do dia').setRequired(true)),
@@ -865,6 +866,12 @@ client.on('interactionCreate', async interaction => {
     } else if (commandName === 'fontes') {
       const q = fontes.statusQuota();
       await interaction.editReply(`📡 **Fontes de dados**\n• Primária: football-data.org (ilimitada)\n• Backup BR: apidofutebol — ${q.usadas}/${q.limite} usadas hoje (${q.restantes} restantes)`);
+    } else if (commandName === 'popularjogadores') {
+      await interaction.editReply('⏳ Buscando os elencos dos 20 clubes na API... (pode levar ~30s)');
+      const { popularJogadores } = require('./popular-jogadores.js');
+      const r = await popularJogadores((msg) => console.log(msg));
+      if (r.ok) await interaction.editReply(`✅ Elencos atualizados: **${r.jogadores} jogadores** de **${r.clubes} clubes** prontos pro Jogo da Memória!`);
+      else await interaction.editReply(`❌ Não consegui atualizar os elencos: ${r.erro}. Confira se a APIFOOTBALL_KEY está configurada (o comando /fontes ajuda).`);
     } else if (commandName === 'dica') {
       const e = await montarDicaDoDia();
       if (!e) return interaction.editReply('Sem odds disponíveis no momento. Tenta mais tarde.');
@@ -1088,6 +1095,39 @@ client.once('clientReady', async () => {
   dica.setRefs(EmbedBuilder, AVISO_APOSTA);
   diagnosticoCanais();
   servidor.iniciarServidor(process.env.PORT || 3000);
+  // Handler do webhook do cargo Sócio (site → bot, após pagamento confirmado)
+  servidor.registrarWebhook(async ({ usuarioId, acao }) => {
+    try {
+      if (!usuarioId || !acao) return;
+      const CARGO_SOCIO = process.env.CARGO_SOCIO || 'Sócio';
+      // descobre o discord_id do usuário pelo Supabase
+      let discordId = null;
+      try {
+        const sb = armaz.supabaseClient ? armaz.supabaseClient() : null;
+        if (sb) {
+          const { data } = await sb.from('usuarios').select('discord_id').eq('id', usuarioId).maybeSingle();
+          discordId = data?.discord_id || null;
+        }
+      } catch (e) { console.error('[WEBHOOK] supabase:', e.message); }
+      if (!discordId) { console.warn(`[WEBHOOK] sem discord_id pro usuário ${usuarioId}`); return; }
+
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      if (!guild) return;
+      let cargo = guild.roles.cache.find(r => r.name === CARGO_SOCIO);
+      if (!cargo) cargo = await guild.roles.create({ name: CARGO_SOCIO, color: 0xffcf00, reason: 'Cargo de Sócio Premium' }).catch(() => null);
+      if (!cargo) return;
+      const membro = await guild.members.fetch(discordId).catch(() => null);
+      if (!membro) { console.warn(`[WEBHOOK] membro ${discordId} não está no servidor`); return; }
+
+      if (acao === 'ativar_socio') {
+        await membro.roles.add(cargo).catch(() => {});
+        console.log(`[WEBHOOK] ✅ cargo Sócio dado a ${membro.user.username}`);
+      } else if (acao === 'remover_socio') {
+        await membro.roles.remove(cargo).catch(() => {});
+        console.log(`[WEBHOOK] ✅ cargo Sócio removido de ${membro.user.username}`);
+      }
+    } catch (e) { console.error('[WEBHOOK] erro:', e.message); }
+  });
   sync.init(); // conecta o Supabase estruturado (loga status)
   await registrarComandos();
   checarAoVivo(); // inicia o monitor inteligente

@@ -364,5 +364,5 @@ async function artilheiros() {
 
 module.exports = {
   jogosDoDia, jogosAoVivo, tabela, artilheiros, proximosJogos,
-  traduzTime, dataISOSaoPaulo, afStatusQuota, afDiagnostico, rodadaAtualLiga, LIGA,
+  traduzTime, dataISOSaoPaulo, afStatusQuota, afDiagnostico, rodadaAtualLiga, getAF, LIGA,
 };
