@@ -1160,3 +1160,4 @@ if (!process.env.DISCORD_TOKEN) {
 } else {
   client.login(process.env.DISCORD_TOKEN);
 }
+  client.once('ready', () => { // ... o que já existe ... const salas = require('./salas-jogos'); salas.iniciar(client); });
