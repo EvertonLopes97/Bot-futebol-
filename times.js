@@ -50,6 +50,39 @@ function ehSerieA(nomeApi) {
   return INDICE.has(norm(nomeApi));
 }
 
+// ── Guarda de CONTEXTO ────────────────────────────────────────────────
+// Casar só por nome não basta: existe "Santos" na 2ª divisão de outros
+// países, e o nome normalizado bate igualzinho com o Santos brasileiro.
+//
+// IMPORTANTE — a lógica aqui é PERMISSIVA de propósito:
+// só bloqueamos quando o país vem informado E é claramente estrangeiro.
+// Se o país não vier, ou vier algo que não reconhecemos, DEIXAMOS PASSAR.
+// (Uma versão anterior exigia que fosse explicitamente "Brazil" e acabou
+// bloqueando todos os jogos quando a API não mandava o campo país.)
+const PAISES_BR = new Set(['brazil', 'brasil']);
+
+// Nessas competições o país costuma vir "World"/"Europe" e clubes
+// brasileiros jogam — então nunca bloqueamos por país aqui.
+const CONTINENTAL = /libertadores|sudamericana|sul americana|recopa|mundial|club world cup|intercontinental|friendlies|amistoso/;
+
+function contextoBrasileiro(pais, competicao) {
+  const p = norm(pais);
+  const c = norm(competicao);
+
+  // Sem país informado → deixa passar (o nome do time decide).
+  if (!p) return true;
+
+  // País é Brasil → passa.
+  if (PAISES_BR.has(p)) return true;
+
+  // Competição continental/mundial → passa (país costuma ser "World").
+  if (CONTINENTAL.test(c)) return true;
+
+  // Chegou aqui: país informado, não é Brasil e não é competição
+  // continental → é o caso do "Santos" da Guatemala. Bloqueia.
+  return false;
+}
+
 // Converte o nome de qualquer API pro nome canônico. Se não for da Série A, devolve o nome original.
 function canonico(nomeApi) {
   const c = INDICE.get(norm(nomeApi));
@@ -63,10 +96,18 @@ function popularidade(nomeQualquer) {
 }
 
 // O jogo envolve pelo menos UM clube da Série A? (é isso que decide se entra no bot)
-function jogoInteressa(nomeCasa, nomeFora) {
+//
+// ctx (opcional) = { pais, competicao }. Quando informado, o jogo só passa
+// se for de um contexto brasileiro/continental — é o que impede o "Santos"
+// de outro país de entrar no lugar do nosso.
+// Sem ctx, o comportamento é o de antes (compatível com chamadas antigas).
+function jogoInteressa(nomeCasa, nomeFora, ctx) {
+  if (ctx && (ctx.pais || ctx.competicao)) {
+    if (!contextoBrasileiro(ctx.pais, ctx.competicao)) return false;
+  }
   return ehSerieA(nomeCasa) || ehSerieA(nomeFora);
 }
 
 const NOMES = CLUBES.map(c => c.nome);
 
-module.exports = { CLUBES, NOMES, norm, ehSerieA, canonico, popularidade, jogoInteressa };
+module.exports = { CLUBES, NOMES, norm, ehSerieA, canonico, popularidade, jogoInteressa, contextoBrasileiro };

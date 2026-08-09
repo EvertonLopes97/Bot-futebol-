@@ -18,7 +18,13 @@ const armaz = require('./armazenamento');
 const servidor = require('./servidor');
 const sync = require('./supabase-sync');
 const estat = require('./estatisticas');
-const roteiro = require('./roteiro');
+// const roteiro = require('./roteiro');  // DESATIVADO: era baseado em odds/apostas
+const com = require('./comunidade');   // cargos de time + sequência de dias
+const noticias = require('./noticias');  // radar de notícias + pauta do dia
+const roteiroIA = require('./roteiro-ia');  // roteiro do vídeo escrito por IA
+const verificar = require('./verificar');   // confere fatos na API antes de gravar
+const engaj = require('./engajamento');     // post diário que gera discussão
+const rlongo = require('./roteiro-longo');  // roteiros de 8+ min pro YouTube
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -38,6 +44,11 @@ const CH = {
   ranking:    process.env.CANAL_RANKING,
   niveis:     process.env.CANAL_NIVEIS,
   fundadores: process.env.CANAL_FUNDADORES, // canal privado dos fundadores
+  bemvindo:   process.env.CANAL_BEMVINDO,   // canal de boas-vindas públicas
+  noticias:   process.env.CANAL_NOTICIAS,   // giro de notícias (público)
+  engajamento: process.env.CANAL_ENGAJAMENTO, // post do dia que gera discussão
+  pauta:      process.env.CANAL_PAUTA,      // pauta do dia (privado, só fundadores)
+  geral:      process.env.CANAL_GERAL,      // fallback se não houver canal de boas-vindas
 };
 const CARGO_VIP = process.env.CARGO_VIP || 'VIP';
 const LINK_SITE = process.env.SITE_URL || 'https://hublab.agency';
@@ -54,6 +65,10 @@ function canal(id) { return id ? client.channels.cache.get(id) : null; }
 // Variável de ambiente: CARGO_TOP100 = nome ou ID do cargo
 const CARGO_TOP100_NOME = process.env.CARGO_TOP100 || 'Top 100 Hub Lab';
 
+// Cargo dado automaticamente a quem entra (dá acesso e marca "cheguei").
+// Deixe vazio no .env pra desativar. Ex: CARGO_INICIAL=Torcedor
+const CARGO_INICIAL_NOME = process.env.CARGO_INICIAL || '';
+
 async function atualizarCargoTop100(discordClient, ranking) {
   try {
     const guild = discordClient.guilds.cache.first();
@@ -63,6 +78,7 @@ async function atualizarCargoTop100(discordClient, ranking) {
     if (!cargo) {
       cargo = await guild.roles.create({
         name: CARGO_TOP100_NOME,
+        colors: { primaryColor: 0xFFCF00 },
         color: 0xFFCF00, // amarelo Hub Lab
         hoist: true,     // aparece separado na lista
         reason: 'Cargo automático Top 100 palpitadores',
@@ -275,20 +291,70 @@ setInterval(async () => {
   const jaFez = (nome) => tarefasFeitas[marca(nome)];
   const marcar = (nome) => { tarefasFeitas[marca(nome)] = true; };
 
-  // 09:00 → roteiro de vídeo de análise pros fundadores
-  if (h === 6 && m === 0 && !jaFez('roteiro06')) {
-    marcar('roteiro06');
-    console.log('[AGENDA] 6h — gerando roteiro de análise');
+  // [DESATIVADO] O roteiro antigo das 6h era baseado em odds/apostas.
+  // Substituído pelo roteiro-ia.js (7h30 manhã e 21h noite), que fala de
+  // NOTÍCIA em vez de aposta. Motivo: conteúdo de aposta reduz alcance e
+  // monetização no YouTube/TikTok, e afasta patrocinador fora do setor.
+  // O roteiro.js continua no repositório caso queira reativar.
+  // 07:30 → PAUTA DO DIA no canal privado (você acorda com o vídeo pronto
+  // pra gravar antes de sair pro trabalho às 8:40)
+  if (h === 7 && m === 30 && !jaFez('pauta0730')) {
+    marcar('pauta0730');
+    console.log('[AGENDA] 7h30 — pauta do dia pros fundadores');
     try {
-      const jogos = await dica.buscarOddsDoDia();
-      const lista = jogos.length ? jogos : await api.jogosDoDia();
-      if (lista.length) {
-        const texto = await roteiro.gerarRoteiro(lista, estat, dica);
-        const chF = canal(CH.fundadores);
-        if (chF) { for (let i = 0; i < texto.length; i += 1900) await chF.send(texto.slice(i, i + 1900)); }
+      await noticias.postarNoticias(client, {
+        canalPrivado: CH.pauta || CH.fundadores,
+        quantidade: 5,
+      });
+      // roteiro curto da manhã (TikTok/Reels)
+      const ch = canal(CH.pauta) || canal(CH.fundadores);
+      if (ch) {
+        const r = await roteiroIA.gerarRoteiro({ periodo: 'manha' });
+        if (!r.erro) await roteiroIA.enviarRoteiro(ch, r, 'manha');
+        // e o roteiro LONGO de curiosidade (8+ min pro YouTube)
+        const rc = await rlongo.roteiroCuriosidade().catch(() => ({ erro: 'falhou' }));
+        if (!rc.erro) await rlongo.enviar(ch, rc, 'curiosidade');
       }
-    } catch (e) { console.error('[ROTEIRO]', e.message); }
+    } catch (e) { console.error('[NOTICIAS] pauta:', e.message); }
   }
+
+  // 18:00 → POST DO DIA no chat (hora que a galera chega do trabalho e
+  // abre o celular — melhor janela pra gerar conversa)
+  if (h === 18 && m === 0 && !jaFez('postodia')) {
+    marcar('postodia');
+    console.log('[AGENDA] 18h — post do dia');
+    try {
+      await engaj.postarDoDia(client, CH.engajamento || CH.geral);
+    } catch (e) { console.error('[ENGAJAMENTO]', e.message); }
+  }
+
+  // 21:00 → roteiro da noite (vídeo de análise pro YouTube)
+  if (h === 21 && m === 0 && !jaFez('roteiroNoite')) {
+    marcar('roteiroNoite');
+    console.log('[AGENDA] 21h — roteiro da noite');
+    try {
+      const ch = canal(CH.pauta) || canal(CH.fundadores);
+      if (ch) {
+        const jogos = await api.jogosDoDia().catch(() => []);
+        // roteiro LONGO de notícias / resumo da rodada (8+ min pro YouTube)
+        const rn = await rlongo.roteiroNoticias(jogos).catch(() => ({ erro: 'falhou' }));
+        if (!rn.erro) await rlongo.enviar(ch, rn, 'noticias');
+      }
+    } catch (e) { console.error('[ROTEIRO-IA] noite:', e.message); }
+  }
+
+  // 12:00 e 19:00 → giro de notícias no canal público da comunidade
+  if (((h === 12 && m === 0) || (h === 19 && m === 0)) && !jaFez(`giro${h}`)) {
+    marcar(`giro${h}`);
+    console.log(`[AGENDA] ${h}h — giro de notícias`);
+    try {
+      await noticias.postarNoticias(client, {
+        canalPublico: CH.noticias,
+        quantidade: 4,
+      });
+    } catch (e) { console.error('[NOTICIAS] giro:', e.message); }
+  }
+
   // 11:00 → agenda do dia (TODOS os jogos, mesmo TIMED) + odds
   if (h === 7 && m === 0 && !jaFez('agenda07')) {
     marcar('agenda07');
@@ -325,7 +391,20 @@ setInterval(async () => {
 async function recapDoDia() {
   const jogosHoje = await api.jogosDoDia();
   const todosPalpites = db.todosOsPalpitesDoDia(jogosHoje);
-  const rk = db.ranking();
+  // Ranking do recap: lê o ranking_site (Supabase) — o ranking ÚNICO, o mesmo
+  // que o site usa. Antes lia db.ranking() (memória do Discord), que vinha
+  // vazio e fazia o recap do WhatsApp sair sem Top 3.
+  // Fallback pro db.ranking() se o Supabase falhar: melhor defasado que mudo.
+  let rk = [];
+  try {
+    rk = await sync.buscarRankingSite(3);
+  } catch (e) {
+    console.error('[RECAP] falhou ao ler ranking_site, usando fallback:', e.message);
+  }
+  if (!rk.length) {
+    rk = (db.ranking() || []).slice(0, 3).map(r => ({ nome: r.nome, pontos: r.pts, exatos: r.exatos }));
+  }
+
   if (!todosPalpites.length && !rk.length) return;
   const exatosHoje = todosPalpites.filter(p => p.acertouExato);
   let msg = `🌙 **RECAP DO DIA — ${new Date().toLocaleDateString('pt-BR')}**\n\n`;
@@ -334,7 +413,12 @@ async function recapDoDia() {
     msg += `🎯 **Cravaram o exato:** ${exatosHoje.map(p => p.nome).join(', ')}\n`;
   }
   msg += `\n🏆 **Top 3 do ranking:**\n`;
-  rk.slice(0, 3).forEach((r, i) => { msg += `${['🥇','🥈','🥉'][i]} ${r.nome} — ${r.pts}pts\n`; });
+  // .pontos vem do ranking_site; .pts vem do fallback do Discord. Aceita os dois
+  // pra nunca imprimir "undefined pts" no grupo.
+  rk.slice(0, 3).forEach((r, i) => {
+    const pts = (r.pontos ?? r.pts ?? 0);
+    msg += `${['🥇','🥈','🥉'][i]} ${r.nome} — ${pts}pts\n`;
+  });
   msg += `\n🌐 Palpite amanhã: ${LINK_SITE}/dashboard.html`;
   const chR = canal(CH.ranking) || canal(CH.palpites);
   if (chR) chR.send(msg).catch(() => {});
@@ -616,6 +700,8 @@ async function processarXp(userId, nome, acao, member, valorLivre) {
 client.on('messageCreate', async msg => {
   if (msg.author.bot || !msg.guild) return;
   processarXp(msg.author.id, msg.author.username, 'mensagem', msg.member);
+  // Sequência de dias: silencioso, conta 1x por dia, não responde nada.
+  com.marcarAtividade(msg.author.id, msg.author.username);
 });
 
 // XP por reação dada
@@ -642,15 +728,58 @@ client.on('messageReactionAdd', async (reaction, user) => {
 const conviteCache = new Map();
 client.on('guildMemberAdd', async member => {
   try {
-    // DM de boas-vindas com link do site
     if (!member.user.bot) {
+      // (1) CARGO INICIAL — dá acesso aos canais e marca "cheguei".
+      // Configure CARGO_INICIAL no .env (ex: "Torcedor"). Sem config, pula.
+      if (CARGO_INICIAL_NOME) {
+        try {
+          let cargoIni = member.guild.roles.cache.find(r => r.name === CARGO_INICIAL_NOME);
+          if (!cargoIni) {
+            cargoIni = await member.guild.roles.create({
+              name: CARGO_INICIAL_NOME,
+              colors: { primaryColor: 0xC6F432 }, color: 0xC6F432,
+              reason: 'Cargo inicial de novos membros',
+            }).catch(() => null);
+          }
+          if (cargoIni) await member.roles.add(cargoIni).catch(() => {});
+        } catch (e) { /* não trava a entrada por causa de cargo */ }
+      }
+
+      // (2) DM de boas-vindas (chega a quem tem DM aberta)
       member.send(
         `👋 Bem-vindo(a) ao **Hub Lab C.O**, ${member.user.username}!\n\n` +
         `Aqui a gente vive futebol: palpites, bolão, odds e muita resenha. 🎯\n\n` +
-        `🌐 **Faça seu primeiro palpite:** ${LINK_SITE}/dashboard.html\n` +
-        `🏆 Acerte placares, suba no ranking e vire o **Rei do Exato**!\n\n` +
+        `🌐 **Faça seu primeiro palpite agora:** ${LINK_SITE}/dashboard.html\n` +
+        `🎮 Tem também o **Ache o Jogador** e o quiz **De que Clube?** pra jogar.\n` +
+        `🏆 Acerte placares, suba no ranking da temporada e vire o **Rei do Exato**!\n\n` +
         `Qualquer dúvida, é só chamar a galera nos canais. Bora pra cima! ⚽`
-      ).catch(() => {}); // se a DM estiver fechada, ignora
+      ).catch(() => {});
+
+      // (3) BOAS-VINDAS PÚBLICAS — a maioria entra pela live com a DM FECHADA,
+      // então a DM acima nunca chega. A pública garante que TODO mundo é
+      // recebido e vê o primeiro passo, e faz a comunidade parecer viva.
+      // IMPORTANTE: só posta no canal DEDICADO de boas-vindas.
+      // Antes ele caía no chat-geral quando CANAL_BEMVINDO não estava
+      // configurado, e isso atrapalhava a conversa da galera (gente
+      // perguntando sobre o jogo se perdia no meio dos "bem-vindo").
+      // Se o canal não estiver configurado, ele simplesmente não posta.
+      const chBemvindo = canal(CH.bemvindo);
+      if (chBemvindo) {
+        const emb = new EmbedBuilder()
+          .setColor(0xC6F432)
+          .setTitle('🎉 Chegou gente nova!')
+          .setDescription(
+            `Seja bem-vindo(a), <@${member.id}>! 👋\n\n` +
+            `**Comece por aqui:**\n` +
+            `🎯 Faça seu 1º palpite: ${LINK_SITE}/dashboard.html\n` +
+            `🎮 Jogue o **Ache o Jogador** e ganhe HubCoins\n` +
+            `🏆 Suba no ranking da temporada\n\n` +
+            `Manda um "salve" no chat pra galera te conhecer! ⚽`
+          )
+          .setThumbnail(member.user.displayAvatarURL())
+          .setFooter({ text: `Você é o membro nº ${member.guild.memberCount} do Hub Lab!` });
+        chBemvindo.send({ content: `<@${member.id}>`, embeds: [emb] }).catch(() => {});
+      }
     }
 
     const novosConvites = await member.guild.invites.fetch().catch(() => null);
@@ -776,7 +905,6 @@ const comandos = [
   new SlashCommandBuilder().setName('exato').setDescription('Palpite no Bolão Exato do dia (crave o placar!)')
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols do time da casa').setRequired(true).setMinValue(0).setMaxValue(20))
     .addIntegerOption(o => o.setName('gols_fora').setDescription('Gols do time de fora').setRequired(true).setMinValue(0).setMaxValue(20)),
-  new SlashCommandBuilder().setName('roteiro').setDescription('(Staff) Gera roteiro de vídeo de análise do dia'),
   new SlashCommandBuilder().setName('historico').setDescription('Veja seu histórico de desempenho')
     .addUserOption(o => o.setName('usuario').setDescription('Ver de outra pessoa (opcional)').setRequired(false)),
   new SlashCommandBuilder().setName('live').setDescription('(Staff) Ativa ou desativa live no site')
@@ -793,6 +921,48 @@ const comandos = [
     .addStringOption(o => o.setName('partida_id').setDescription('ID da partida').setRequired(true))
     .addIntegerOption(o => o.setName('gols_casa').setDescription('Gols casa').setRequired(true).setMinValue(0).setMaxValue(20))
     .addIntegerOption(o => o.setName('gols_fora').setDescription('Gols fora').setRequired(true).setMinValue(0).setMaxValue(20)),
+
+  // Comunidade: /time, /torcidas, /sequencia, /ranksequencia
+  ...com.comandos(),
+
+  new SlashCommandBuilder().setName('noticias')
+    .setDescription('Giro das notícias mais quentes dos times da Série A'),
+  new SlashCommandBuilder().setName('pauta')
+    .setDescription('[fundadores] Pauta e roteiro do vídeo de hoje'),
+  new SlashCommandBuilder().setName('postodia')
+    .setDescription('[staff] Gera o post do dia pra jogar no chat')
+    .addStringOption(o => o.setName('formato').setDescription('Deixe vazio pra escolher sozinho')
+      .addChoices(
+        { name: '📰 Resenha da notícia', value: 'noticia' },
+        { name: '🔥 Pergunta polêmica', value: 'polemica' },
+        { name: '🏆 Monta o ranking', value: 'ranking' },
+        { name: '🤔 E se...', value: 'seousasse' },
+        { name: '💭 Memória afetiva', value: 'memoria' },
+        { name: '🙏 Agradecimento', value: 'agradece' }))
+    .addStringOption(o => o.setName('contexto')
+      .setDescription('Algo específico pra citar (ex: "ontem teve live com 30 pessoas")')),
+  new SlashCommandBuilder().setName('videonoticias')
+    .setDescription('[staff] Roteiro LONGO de notícias (8+ min) pronto pra ler'),
+  new SlashCommandBuilder().setName('videocuriosidade')
+    .setDescription('[staff] Roteiro LONGO de curiosidade (8+ min) pronto pra ler')
+    .addStringOption(o => o.setName('tema').setDescription('Tema específico (vazio = tema do dia)'))
+    .addStringOption(o => o.setName('dados').setDescription('Dados confirmados pra IA usar')),
+  new SlashCommandBuilder().setName('confere')
+    .setDescription('Confere na API: onde o jogador está e o histórico dele')
+    .addStringOption(o => o.setName('jogador').setDescription('Nome do jogador').setRequired(true))
+    .addStringOption(o => o.setName('clube').setDescription('Confirmar se ele está NESTE clube (opcional)')),
+  new SlashCommandBuilder().setName('roteiro')
+    .setDescription('[fundadores] Roteiro completo do vídeo, escrito por IA')
+    .addStringOption(o => o.setName('formato').setDescription('Qual tipo de vídeo')
+      .addChoices(
+        { name: '💰 Monetizável — 90-150s (TikTok paga)', value: 'monetizavel' },
+        { name: '🔍 Curiosidade/Comparação — 90-150s', value: 'curiosidade' },
+        { name: '☀️ Manhã — vídeo curto', value: 'manha' },
+        { name: '🌙 Noite — análise longa (YouTube)', value: 'noite' }))
+    .addStringOption(o => o.setName('tema')
+      .setDescription('Só pra Curiosidade. Ex: "Galo 2021 x Fluminense 2026"'))
+    .addStringOption(o => o.setName('dados')
+      .setDescription('Só pra Curiosidade. Dados CONFIRMADOS que a IA deve usar')),
 ];
 
 async function registrarComandos() {
@@ -834,6 +1004,145 @@ client.on('interactionCreate', async interaction => {
   }
   await interaction.deferReply();
   try {
+    // Comunidade (/time, /torcidas, /sequencia, /ranksequencia).
+    if (await com.tratarComando(interaction)) return;
+
+    if (commandName === 'noticias') {
+      const lista = await noticias.buscarNoticias({ apenasNovas: false, minScore: 5 });
+      if (!lista.length) return interaction.editReply('Nada quente agora. Volta mais tarde!');
+      const desc = lista.slice(0, 5).map((n, i) => {
+        const tag = n.tags.length ? ` ${n.tags[0]}` : '';
+        return `**${i + 1}.${tag} ${n.titulo}**\n${n.clubes.map(c => `\`${c}\``).join(' ')} · [ler no ${n.fonte}](${n.link})`;
+      }).join('\n\n');
+      return interaction.editReply({ embeds: [new EmbedBuilder()
+        .setColor(0xC6F432).setTitle('📰 Giro do Hub Lab').setDescription(desc)
+        .setFooter({ text: 'Comenta aí o que achou!' })] });
+    }
+
+    if (commandName === 'videonoticias' || commandName === 'videocuriosidade') {
+      const mb = await interaction.guild.members.fetch(interaction.user.id);
+      const staff = mb.permissions.has(PermissionsBitField.Flags.Administrator)
+        || mb.roles.cache.some(r => /fundador|moderador/i.test(r.name));
+      if (!staff) return interaction.editReply('❌ Só a staff gera roteiro.');
+
+      await interaction.editReply('✍️ Escrevendo o roteiro longo... isso leva ~1 minuto.');
+
+      let r;
+      if (commandName === 'videonoticias') {
+        const jogos = await api.jogosDoDia().catch(() => []);
+        r = await rlongo.roteiroNoticias(jogos);
+      } else {
+        r = await rlongo.roteiroCuriosidade(
+          interaction.options.getString('tema') || '',
+          interaction.options.getString('dados') || '');
+      }
+
+      if (r.erro) return interaction.followUp(`❌ ${r.erro}`);
+      const destino = canal(CH.pauta) || canal(CH.fundadores) || interaction.channel;
+      await rlongo.enviar(destino, r, commandName === 'videonoticias' ? 'noticias' : 'curiosidade');
+      return interaction.followUp(`✅ Roteiro pronto (~${r.minutos} min) no canal de pautas!`);
+    }
+
+    if (commandName === 'postodia') {
+      const membroP = await interaction.guild.members.fetch(interaction.user.id);
+      const ehStaffP = membroP.permissions.has(PermissionsBitField.Flags.Administrator)
+        || membroP.roles.cache.some(r => /fundador|moderador/i.test(r.name));
+      if (!ehStaffP) return interaction.editReply('❌ Só a staff gera o post do dia.');
+
+      const r = await engaj.gerarPost({
+        formato: interaction.options.getString('formato'),
+        contexto: interaction.options.getString('contexto') || '',
+      });
+      if (r.erro) return interaction.editReply(`❌ ${r.erro}`);
+      return interaction.editReply(
+        `**Formato:** ${r.formato}\n\n───────────\n${r.texto}\n───────────\n` +
+        `_Copie e cole no chat, ou ajuste do seu jeito._`);
+    }
+
+    if (commandName === 'confere') {
+      const nome = interaction.options.getString('jogador');
+      const clube = interaction.options.getString('clube');
+
+      // Pergunta direta: "fulano está no clube X?"
+      if (clube) {
+        const r = await verificar.confirmarJogadorNoClube(nome, clube);
+        if (r.erro) return interaction.editReply(`❌ ${r.erro}`);
+        const emb = new EmbedBuilder()
+          .setColor(r.encontrado ? 0x2ECC71 : 0xE74C3C)
+          .setTitle(r.encontrado ? '✅ CONFIRMADO' : '❌ NÃO ENCONTRADO')
+          .setDescription(r.encontrado
+            ? `**${r.jogador.nome}** está no elenco atual do **${r.clube}**.\n` +
+              `Posição: ${r.jogador.posicao || '—'} · Idade: ${r.jogador.idade || '—'}` +
+              (r.jogador.numero ? ` · Camisa ${r.jogador.numero}` : '')
+            : `**${nome}** NÃO aparece no elenco atual do **${r.clube}** ` +
+              `(${r.totalElenco} jogadores checados).\n\n⚠️ Não grave essa informação.`)
+          .setFooter({ text: `Fonte: API-Football · elenco do ${r.clube} (${r.pais})` });
+        return interaction.editReply({ embeds: [emb] });
+      }
+
+      // Busca geral: onde está e histórico
+      const achados = await verificar.acharJogador(nome);
+      if (achados.erro) return interaction.editReply(`❌ ${achados.erro}`);
+      const j = achados[0];
+
+      const [atual, transf] = await Promise.all([
+        verificar.clubeAtual(j.id),
+        verificar.transferencias(j.id),
+      ]);
+
+      let desc = `**${j.nome}**${j.nomeCompleto ? ` (${j.nomeCompleto})` : ''}\n` +
+                 `${j.posicao || '—'} · ${j.idade || '?'} anos · ${j.nacionalidade || '—'}\n\n`;
+
+      if (!atual.erro && atual.principal) {
+        desc += `**📍 Clube atual (${atual.temporada}):** ${atual.principal.clube}\n`;
+        if (atual.times.length > 1) {
+          desc += `_Outros na temporada: ${atual.times.slice(1).map(t => t.clube).join(', ')}_\n`;
+        }
+        desc += '\n';
+      }
+
+      if (!transf.erro && transf.transferencias?.length) {
+        const ultimas = transf.transferencias.slice(0, 5);
+        desc += `**🔄 Últimas transferências:**\n` +
+          ultimas.map(t => `\`${t.data}\` ${t.de} → **${t.para}** (${t.tipo})`).join('\n');
+      }
+
+      return interaction.editReply({ embeds: [new EmbedBuilder()
+        .setColor(0xC6F432).setTitle('🔍 Verificação de fato').setDescription(desc)
+        .setThumbnail(j.foto || null)
+        .setFooter({ text: 'Fonte: API-Football · confira antes de gravar' })] });
+    }
+
+    if (commandName === 'roteiro') {
+      if (CH.fundadores && interaction.channelId !== CH.fundadores &&
+          interaction.channelId !== CH.pauta) {
+        return interaction.editReply('Esse comando é só no canal dos fundadores.');
+      }
+      const periodo = interaction.options.getString('formato') || 'manha';
+      const tema = interaction.options.getString('tema') || '';
+      const dados = interaction.options.getString('dados') || '';
+      await interaction.editReply('✍️ Escrevendo o roteiro...');
+      const jogos = periodo === 'noite' ? await api.jogosDoDia().catch(() => []) : [];
+      const r = await roteiroIA.gerarRoteiro({ periodo, jogos, tema, dados });
+      if (r.erro) return interaction.followUp(r.erro);
+      await roteiroIA.enviarRoteiro(interaction.channel, r, periodo);
+      return;
+    }
+
+    if (commandName === 'pauta') {
+      // só nos canais de fundadores
+      if (CH.fundadores && interaction.channelId !== CH.fundadores &&
+          interaction.channelId !== CH.pauta) {
+        return interaction.editReply('Esse comando é só no canal dos fundadores.');
+      }
+      const lista = await noticias.buscarNoticias({ apenasNovas: false, minScore: 5 });
+      const p = noticias.montarPauta(lista);
+      if (!p) return interaction.editReply('Sem pauta relevante agora.');
+      await interaction.editReply({ embeds: [new EmbedBuilder()
+        .setColor(0xFFCF00).setTitle('🎯 PAUTA DO DIA').setDescription(p.linhas)] });
+      return interaction.followUp({ content: p.roteiro, ephemeral: false });
+    }
+
     if (commandName === 'jogos') {
       const jogosHoje = await api.jogosDoDia();
       // sincroniza no Supabase (hoje + próximos) pra atualizar a tabela do site
@@ -894,25 +1203,6 @@ client.on('interactionCreate', async interaction => {
       const embeds = await dica.montarMultiplasProntas(jogos, estat);
       if (!embeds.length) { await interaction.editReply('Não consegui montar múltiplas agora.'); return; }
       await interaction.editReply({ embeds });
-    } else if (commandName === 'roteiro') {
-      const membroR = await interaction.guild.members.fetch(interaction.user.id);
-      const ehStaffR = membroR.permissions.has(PermissionsBitField.Flags.Administrator)
-        || membroR.roles.cache.some(r => /fundador|moderador/i.test(r.name));
-      if (!ehStaffR) return interaction.editReply('❌ Só a staff gera roteiros.');
-      const jogos = await dica.buscarOddsDoDia();
-      const texto = await roteiro.gerarRoteiro(jogos.length ? jogos : await api.jogosDoDia(), estat, dica);
-      // envia no canal fundadores se configurado, senão responde
-      const chF = canal(CH.fundadores);
-      if (chF) {
-        // quebra em pedaços de 1900 chars (limite Discord)
-        for (let i = 0; i < texto.length; i += 1900) {
-          await chF.send(texto.slice(i, i + 1900));
-        }
-        await interaction.editReply('✅ Roteiro gerado no canal fundadores! Bom vídeo! 🎬');
-      } else {
-        await interaction.editReply(texto.slice(0, 1900));
-      }
-
     } else if (commandName === 'historico') {
       const alvo = interaction.options.getUser('usuario') || interaction.user;
       const hist = db.meusPalpites(alvo.id);
@@ -1126,7 +1416,7 @@ client.once('clientReady', async () => {
       const guild = client.guilds.cache.get(process.env.GUILD_ID);
       if (!guild) return;
       let cargo = guild.roles.cache.find(r => r.name === CARGO_SOCIO);
-      if (!cargo) cargo = await guild.roles.create({ name: CARGO_SOCIO, color: 0xffcf00, reason: 'Cargo de Sócio Premium' }).catch(() => null);
+      if (!cargo) cargo = await guild.roles.create({ name: CARGO_SOCIO, colors: { primaryColor: 0xffcf00 }, color: 0xffcf00, reason: 'Cargo de Sócio Premium' }).catch(() => null);
       if (!cargo) return;
       const membro = await guild.members.fetch(discordId).catch(() => null);
       if (!membro) { console.warn(`[WEBHOOK] membro ${discordId} não está no servidor`); return; }
@@ -1142,6 +1432,7 @@ client.once('clientReady', async () => {
   });
   sync.init(); // conecta o Supabase estruturado (loga status)
   await registrarComandos();
+  com.iniciar(client);   // cargos de time + sequência
   checarAoVivo(); // inicia o monitor inteligente
   wa.iniciarWhatsApp().catch(e => console.error('WPP init:', e.message)); // inicia o WhatsApp
   // Popula o cache de convites (pra detectar quem convida quem)
@@ -1160,4 +1451,3 @@ if (!process.env.DISCORD_TOKEN) {
 } else {
   client.login(process.env.DISCORD_TOKEN);
 }
-  client.once('ready', () => { // ... o que já existe ... const salas = require('./salas-jogos'); salas.iniciar(client); });

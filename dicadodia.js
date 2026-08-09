@@ -8,8 +8,9 @@ function setRefs(EmbedBuilder, aviso) { EmbedBuilderRef = EmbedBuilder; if (avis
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const timesSerieA = require('./times.js');   // clubes da Série A (filtro dos jogos)
 
-const DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
+const DIR = process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 const CACHE = path.join(DIR, 'odds_cache.json');
 
 const ODDSPAPI_KEY = process.env.ODDSPAPI_KEY;
@@ -82,8 +83,30 @@ async function buscarOddsDoDia() {
       else console.log('[ODDS] nenhum jogo da Copa identificado, mostrando todos disponíveis');
     }
 
+    // ── FILTRO PRINCIPAL: só jogos dos times que aparecem pra palpitar ──
+    // Antes, a lista vinha com jogos do mundo inteiro e a gente cortava os
+    // N primeiros por HORÁRIO. Resultado: entrava qualquer coisa — inclusive
+    // um "Santos" de outra liga que, por jogar mais cedo, tomava a vaga do
+    // Santos do Brasil. Agora filtramos pelos clubes da Série A antes.
+    const antesFiltro = fixtures.length;
+    fixtures = fixtures.filter(f => timesSerieA.jogoInteressa(
+      f.participant1Name, f.participant2Name,
+      { pais: f.categoryName || f.countryName, competicao: f.tournamentName }
+    ));
+    console.log(`[ODDS] ${fixtures.length} de ${antesFiltro} são jogos do bolão`);
+
+    // Ordena por RELEVÂNCIA (fama dos times), não por horário. Assim a cota
+    // da API é gasta nos jogos que a galera quer ver, não nos que abrem antes.
+    fixtures.sort((a, b) =>
+      relevanciaJogo({ casa: b.participant1Name, fora: b.participant2Name }) -
+      relevanciaJogo({ casa: a.participant1Name, fora: a.participant2Name })
+    );
+
     fixtures = fixtures.slice(0, jogosPorEntrega());
-    if (!fixtures.length) { console.log('[ODDS] nenhum jogo após filtro'); return []; }
+    if (!fixtures.length) {
+      console.log('[ODDS] nenhum jogo dos nossos times com odds hoje');
+      return [];
+    }
 
     const jogos = [];
     for (const f of fixtures) {
@@ -191,7 +214,6 @@ const TIMES_POPULARES = {
   'Japan':5,'Japão':5,'South Korea':5,'Coreia do Sul':5,'Morocco':6,'Marrocos':6,
 };
 // Fama do time: 1º procura nos clubes da Série A (times.js), 2º nas seleções, senão 3.
-const timesSerieA = require('./times.js');
 function popTime(nome){
   if (timesSerieA.ehSerieA(nome)) return timesSerieA.popularidade(nome);
   return TIMES_POPULARES[nome] || 3;
