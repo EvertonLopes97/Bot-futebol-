@@ -420,13 +420,43 @@ function mapAF(f) {
 }
 
 // ── Dedup ──
-function chaveJogo(j) {
-  return `${j.data}|${times.norm(j.casa)}|${times.norm(j.fora)}`;
+// Normaliza nome de time pra comparação, tolerando as variações que cada
+// API usa. Times brasileiros passam pelo times.js (que tem as variantes);
+// os estrangeiros não estão lá, então limpamos os prefixos/sufixos mais
+// comuns — foi o que fazia "CS Independiente Rivadavia" e "Independiente
+// Rivadavia" contarem como jogos diferentes e duplicarem o palpite.
+function nomeParaChave(nome) {
+  const canonico = times.canonico(nome);          // se for BR, vira o nome oficial
+  return times.norm(canonico)
+    // prefixos e sufixos de clube que variam entre APIs
+    .replace(/\b(cs|ca|cd|sc|ec|fc|afc|ac|cf|club|clube|atletico|atlético|deportivo)\b/g, ' ')
+    .replace(/\b(fc|sc|ec|cf|afc|ac|sad|ltda)\b\s*$/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
+
+function chaveJogo(j) {
+  return `${j.data}|${nomeParaChave(j.casa)}|${nomeParaChave(j.fora)}`;
+}
+// Remove jogo repetido de QUALQUER origem.
+// Antes só comparávamos FD contra AF — mas desde que passamos a buscar
+// BSA e CLI separadamente, o mesmo jogo pode vir DUAS VEZES dentro da
+// própria lista FD (era isso que duplicava o palpite no site).
+// Agora a dedup roda sobre a lista inteira, mantendo a 1ª ocorrência.
+function dedup(lista) {
+  const vistos = new Set();
+  const saida = [];
+  for (const j of lista) {
+    const k = chaveJogo(j);
+    if (vistos.has(k)) continue;
+    vistos.add(k);
+    saida.push(j);
+  }
+  return saida;
+}
+
 function mesclar(listaFD, listaAF) {
-  const vistos = new Set(listaFD.map(chaveJogo));
-  const extras = listaAF.filter(j => !vistos.has(chaveJogo(j)));
-  return [...listaFD, ...extras];
+  return dedup([...listaFD, ...listaAF]);
 }
 
 // ═══════════════ FUNÇÕES PÚBLICAS ═══════════════
@@ -449,7 +479,8 @@ async function jogosDoDia() {
       // na Liberta tem jogo entre times de fora; só interessa se tem clube nosso
       .filter(j => times.jogoInteressa(j.casa, j.fora));
     if (jogosExtra.length) console.log(`[API-FD] ${extra}: ${jogosExtra.length} jogo(s) com times nossos`);
-    listaFD = [...listaFD, ...jogosExtra];
+    // dedup já aqui: o mesmo confronto pode aparecer em mais de uma liga
+    listaFD = dedup([...listaFD, ...jogosExtra]);
   }
 
   let listaAF = [];
@@ -512,7 +543,7 @@ async function proximosJogos() {
       .slice(0, 30)
       .map(mapFD)
       .filter(j => times.jogoInteressa(j.casa, j.fora));
-    listaFD = [...listaFD, ...jogosExtra];
+    listaFD = dedup([...listaFD, ...jogosExtra]);
   }
 
   // Só consulta dias DENTRO da janela do plano (a guarda em getAF também protege,

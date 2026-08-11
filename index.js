@@ -25,6 +25,7 @@ const roteiroIA = require('./roteiro-ia');  // roteiro do vídeo escrito por IA
 const verificar = require('./verificar');   // confere fatos na API antes de gravar
 const engaj = require('./engajamento');     // post diário que gera discussão
 const rlongo = require('./roteiro-longo');  // roteiros de 8+ min pro YouTube
+const pesq = require('./pesquisa');         // apura fatos (Wikipédia + matérias)
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -947,6 +948,9 @@ const comandos = [
     .setDescription('[staff] Roteiro LONGO de curiosidade (8+ min) pronto pra ler')
     .addStringOption(o => o.setName('tema').setDescription('Tema específico (vazio = tema do dia)'))
     .addStringOption(o => o.setName('dados').setDescription('Dados confirmados pra IA usar')),
+  new SlashCommandBuilder().setName('pesquisar')
+    .setDescription('[staff] Busca fatos reais sobre um tema antes de gravar')
+    .addStringOption(o => o.setName('tema').setDescription('Ex: história do Cruzeiro').setRequired(true)),
   new SlashCommandBuilder().setName('confere')
     .setDescription('Confere na API: onde o jogador está e o histórico dele')
     .addStringOption(o => o.setName('jogador').setDescription('Nome do jogador').setRequired(true))
@@ -1017,6 +1021,25 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply({ embeds: [new EmbedBuilder()
         .setColor(0xC6F432).setTitle('📰 Giro do Hub Lab').setDescription(desc)
         .setFooter({ text: 'Comenta aí o que achou!' })] });
+    }
+
+    if (commandName === 'pesquisar') {
+      const tema = interaction.options.getString('tema');
+      await interaction.editReply('🔎 Apurando...');
+      const d = await pesq.montarDossie(tema);
+      if (!d.temFatos) {
+        return interaction.followUp(
+          `❌ Não achei fonte sobre "${tema}".\n` +
+          `Tente citar o nome do clube, ou pesquise você e use o campo \`dados\`.`);
+      }
+      const resumo = d.fatos.slice(0, 1500);
+      await interaction.followUp({ embeds: [new EmbedBuilder()
+        .setColor(0xC6F432)
+        .setTitle(`📚 Fatos sobre: ${tema}`)
+        .setDescription(resumo.length < d.fatos.length ? resumo + '\n\n_(cortado)_' : resumo)
+        .setFooter({ text: `${d.fontes.length} fonte(s) · clubes: ${d.clubesEncontrados.join(', ') || '—'}` })] });
+      const links = d.fontes.map((f, i) => `${i + 1}. [${f.tipo}] <${f.link}>`).join('\n');
+      return interaction.followUp('🔗 **Fontes:**\n' + links.slice(0, 1800));
     }
 
     if (commandName === 'videonoticias' || commandName === 'videocuriosidade') {

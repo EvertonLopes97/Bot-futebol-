@@ -94,8 +94,12 @@ function parseRSS(xml, fonte) {
     };
     const titulo = pega('title');
     const link = pega('link') || (b.match(/<link[^>]*>([^<]+)/i)?.[1] || '').trim();
+    // O RESUMO é essencial: sem ele a IA só tem a manchete e acaba
+    // inventando contexto (foi o que gerou "218 milhões" sem nome de
+    // jogador). Aqui pegamos o resumo que o próprio portal publica.
+    const resumo = pega('description') || pega('content:encoded') || pega('summary') || '';
     const data = pega('pubDate');
-    if (titulo && link) itens.push({ titulo, link, data, fonte });
+    if (titulo && link) itens.push({ titulo, link, data, fonte, resumo: resumo.slice(0, 600) });
   }
   return itens;
 }
@@ -139,7 +143,8 @@ function temperatura(titulo) {
 
 // Notícia é "nossa" se cita clube da Série A. Score final soma a fama do clube.
 function analisar(item) {
-  const clubes = clubesCitados(item.titulo);
+  // procura clube no título E no resumo — mais preciso
+  const clubes = clubesCitados(`${item.titulo} ${item.resumo || ''}`);
   if (!clubes.length) return null;
 
   const t = temperatura(item.titulo);
