@@ -834,7 +834,12 @@ async function entregaOdds(titulo) {
     wa.enviar(textoWpp);
     sync.salvarOddsDoDia(jogos); // persiste no Supabase p/ o site
   } else {
-    wa.enviar(`📢 *${titulo || 'Odds do dia'}*\n\nSem odds disponíveis agora. 🌐 Site: ${LINK_SITE}\n📱 Discord: ${LINK_DISCORD}`);
+    // Mensagem honesta: antes dizia "sem odds disponíveis", que soa como
+    // bot quebrado. Quase sempre é só ausência de jogo dos nossos times.
+    wa.enviar(`📢 *${titulo || 'Odds do dia'}*\n\n` +
+      `Ainda não saíram odds pros jogos dos nossos times. Assim que abrirem, eu aviso! ⚽\n\n` +
+      `Enquanto isso, dá uma olhada nos jogos e crava seu palpite:\n` +
+      `🌐 ${LINK_SITE}\n📱 ${LINK_DISCORD}`);
   }
 }
 // (Os disparos de 11h e 20h agora são feitos pelo agendador robusto lá em cima)
@@ -1218,7 +1223,9 @@ client.on('interactionCreate', async interaction => {
       else await interaction.editReply(`❌ Não consegui atualizar os elencos: ${r.erro}. Confira se a APIFOOTBALL_KEY está configurada (o comando /fontes ajuda).`);
     } else if (commandName === 'dica') {
       const e = await montarDicaDoDia();
-      if (!e) return interaction.editReply('Sem odds disponíveis no momento. Tenta mais tarde.');
+      if (!e) return interaction.editReply(
+        '⚽ Ainda não saíram odds pros jogos dos nossos times hoje.\n' +
+        '_As casas normalmente abrem as odds 1-2 dias antes do jogo._');
       await interaction.editReply({ embeds: [e] });
     } else if (commandName === 'multipla') {
       const jogos = await dica.buscarOddsDoDia();

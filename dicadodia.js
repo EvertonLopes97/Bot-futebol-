@@ -12,6 +12,11 @@ const timesSerieA = require('./times.js');   // clubes da Série A (filtro dos j
 
 const DIR = process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 const CACHE = path.join(DIR, 'odds_cache.json');
+// Quando a API devolve 429 (limite estourado), gravamos aqui até quando
+// não vale a pena tentar de novo. Sem isso o bot batia na porta fechada
+// a cada ciclo e queimava a cota mensal à toa.
+const PAUSA_ARQ = path.join(DIR, '.odds-pausa.json');
+const PAUSA_APOS_429_MIN = parseInt(process.env.ODDS_PAUSA_MIN || '120');
 
 const ODDSPAPI_KEY = process.env.ODDSPAPI_KEY;
 const ODDSPAPI_BASE = 'https://api.oddspapi.io';
@@ -55,7 +60,26 @@ function probImplicita(odd) { return odd>0 ? 1/odd : 0; }
 
 // Busca jogos com odds do dia. Retorna lista normalizada.
 // OBS: o endpoint exato pode variar conforme o painel da OddsPapi — ajustável via env.
+// Estamos em pausa por causa de um 429 recente?
+function emPausa() {
+  try {
+    const { ate } = JSON.parse(fs.readFileSync(PAUSA_ARQ, 'utf8'));
+    if (Date.now() < ate) {
+      const faltam = Math.ceil((ate - Date.now()) / 60000);
+      console.log(`[ODDS] em pausa por limite da API — volto em ${faltam} min`);
+      return true;
+    }
+  } catch { /* sem pausa */ }
+  return false;
+}
+
+// Destrava a pausa na mão (útil se trocar de plano/chave)
+function destravarOdds() {
+  try { fs.unlinkSync(PAUSA_ARQ); return true; } catch { return false; }
+}
+
 async function buscarOddsDoDia() {
+  if (emPausa()) return [];
   const cacheado = getCache('odds_dia', 180);
   if (cacheado) return cacheado;
   if (!ODDSPAPI_KEY) { console.error('[ODDS] ODDSPAPI_KEY ausente'); return []; }
@@ -67,7 +91,18 @@ async function buscarOddsDoDia() {
     const to = new Date(agora.getTime() + 2*86400000).toISOString().split('.')[0] + 'Z';
     const urlFix = `${ODDSPAPI_BASE}/v4/fixtures?apiKey=${ODDSPAPI_KEY}&sportId=10&from=${from}&to=${to}&hasOdds=true`;
     const resFix = await fetch(urlFix);
-    if (!resFix.ok) { console.error('[ODDS] fixtures status', resFix.status); return []; }
+    if (!resFix.ok) {
+      console.error('[ODDS] fixtures status', resFix.status);
+      // 429 = estourou o limite. Antes o bot continuava tentando a cada
+      // ciclo e queimava a cota à toa (12 tentativas seguidas no log).
+      // Agora ele para de tentar por um tempo.
+      if (resFix.status === 429) {
+        const ate = Date.now() + PAUSA_APOS_429_MIN * 60000;
+        try { fs.writeFileSync(PAUSA_ARQ, JSON.stringify({ ate })); } catch {}
+        console.error(`[ODDS] limite atingido — pausando por ${PAUSA_APOS_429_MIN} min`);
+      }
+      return [];
+    }
     let fixtures = await resFix.json();
     if (!Array.isArray(fixtures)) { console.log('[ODDS] resposta inesperada'); return []; }
     console.log(`[ODDS] ${fixtures.length} jogos com odds encontrados`);
